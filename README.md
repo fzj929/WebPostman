@@ -116,6 +116,13 @@ bash scripts/manage-service.sh run
 
 ## 功能
 
+- 请求标签页分别保留草稿、响应和发送状态；支持复制请求、复制 Bash cURL、Ctrl+S / ⌘S 保存，以及关闭未保存标签时确认。
+- 集合与请求搜索、集合/文件夹折叠、Postman 嵌套文件夹与授权继承；Multipart 导入保留文本和文件字段，文件内容需要重新选择。
+- 每个请求可配置 1～600 秒超时和重定向开关；诊断区分原始与最终 URL，跨来源重定向不转发敏感请求头。敏感诊断默认隐藏，可按请求显式显示。
+- 响应正文搜索高亮、文本/二进制下载；超过 2 MB 的响应会标明截断，下载内容也仅包含已读取的部分。
+- 集合、环境和历史分表存储，仅提交变更实体；保存采用版本检测，旧页面无法覆盖新修改。冲突后可导出备份（含未保存标签草稿）再重新载入。
+- 历史记录独立分页，保留最近 1000 条。导出时包含全部保留历史；导入集合不会改写已有历史。
+
 - HTTP 请求编辑与发送，支持参数、请求头、请求 Cookie、JSON、文本、表单和 Multipart 文件。
 - 可按请求启用不安全 SSL 连接，用于访问自签名或证书不受信任的 HTTPS 服务；该选项会随请求及历史快照保存。
 - Basic Auth、Bearer Token、API Key；支持集合、文件夹、请求三级配置与继承。
@@ -127,6 +134,20 @@ bash scripts/manage-service.sh run
 认证值及历史快照以明文保存在本机 SQLite 工作区及导出的 JSON 中。请妥善保管这些文件；不要将本应用直接作为公网服务部署。
 
 测试时可通过环境变量 `WebPostman__ListenUrl` 和 `WebPostman__DataDirectory` 指定独立端口与数据目录，避免更改已有工作区。
+
+### 数据升级与验证
+
+新版首次打开旧数据库时，在事务中将集合、环境与历史迁移到独立表，原始 `workspace` JSON 行保留为迁移快照。升级前请备份 `App_Data`；降级旧版本不能读取新版表中的后续修改。新旧版本应分别使用自己的数据目录。
+
+安装前端依赖后，可在仓库根目录执行：
+
+```powershell
+npm --prefix WebPostman.Web run build
+dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
+node --test tests/frontend.test.mjs tests/api.test.mjs
+```
+
+测试使用独立端口和临时 SQLite 数据库，需要 Node.js 22、.NET 8 SDK 和 Python 3（生成旧库迁移测试数据）。`Regression checks` 在提交到 main 或创建 PR 时自动在 Windows / Linux 上执行。发布工作流继续对两个平台的便携包执行启动检查。
 
 ## 许可证
 

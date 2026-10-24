@@ -9,6 +9,18 @@ public sealed class RequestExecutor(IHttpClientFactory factory)
 {
     private static readonly Regex VariablePattern = new(@"\{\{\s*([^{}]+?)\s*\}\}", RegexOptions.Compiled);
     private const int MaxResponseBytes = 2 * 1024 * 1024;
+    private static bool Sensitive(string name) => Regex.IsMatch(name, "authorization|cookie|token|secret|password|passwd|key|credential", RegexOptions.IgnoreCase);
+    private static string DisplayUrl(Uri uri, bool reveal, string authKey)
+    {
+        if (reveal) return uri.ToString();
+        var builder = new UriBuilder(uri) { UserName = "", Password = "" };
+        builder.Query = string.Join("&", builder.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries).Select(part =>
+        {
+            var pair = part.Split('=', 2); var key = Uri.UnescapeDataString(pair[0]);
+            return Sensitive(key) || key.Equals(authKey, StringComparison.OrdinalIgnoreCase) ? pair[0] + "=REDACTED" : part;
+        }));
+        return builder.Uri.ToString();
+    }
 
     public static string SafeDisplayUrl(string raw)
     {
@@ -45,7 +57,7 @@ public sealed class RequestExecutor(IHttpClientFactory factory)
         }
 
         using var request = new HttpRequestMessage(new HttpMethod(method), uri);
-        request.Content = BuildContent(spec, Expand);
+        request.Content = BuildContent(spec with { Method = method }, Expand);
         foreach (var row in spec.Headers.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.Key)))
         {
             var key = Expand(row.Key).Trim();
@@ -73,23 +85,22 @@ public sealed class RequestExecutor(IHttpClientFactory factory)
         if (!request.Headers.Contains("User-Agent")) request.Headers.TryAddWithoutValidation("User-Agent", "WebPostman/1.0");
         if (!request.Headers.Contains("Accept-Encoding")) request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
         var prepareMs = overall.ElapsedMilliseconds;
-        var contentHeaders = request.Content is null
-            ? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>()
-            : request.Content.Headers.AsEnumerable();
-        var sentHeaders = request.Headers.Concat(contentHeaders)
-            .ToDictionary(x => x.Key, x => x.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase) ||
-                x.Key.Equals("Cookie", StringComparison.OrdinalIgnoreCase) || x.Key.Contains("key", StringComparison.OrdinalIgnoreCase)
+        Dictionary<string, string> TraceHeaders(HttpRequestMessage sent) => sent.Headers.Concat(sent.Content?.Headers.AsEnumerable() ?? [])
+            .ToDictionary(x => x.Key, x => !spec.ShowSensitiveTrace && (Sensitive(x.Key) || x.Key.Equals(Expand(auth.Key), StringComparison.OrdinalIgnoreCase))
                 ? "••••••" : string.Join(", ", x.Value), StringComparer.OrdinalIgnoreCase);
         var bodyPreview = spec.BodyType is "json" or "text" ? Expand(spec.Body) : spec.BodyType is "form" or "multipart"
             ? string.Join("&", spec.Form.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.Key)).Select(x => $"{Expand(x.Key)}={Expand(x.Value)}"))
             : "";
         if (bodyPreview.Length > 4096) bodyPreview = bodyPreview[..4096] + "…";
+        if (!spec.ShowSensitiveTrace && bodyPreview.Length > 0) bodyPreview = "[正文预览已隐藏；可在请求设置中显示敏感诊断]";
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(60));
+        timeout.CancelAfter(TimeSpan.FromSeconds(spec.TimeoutSeconds));
         var client = factory.CreateClient(spec.AllowInsecureSsl ? "insecure-requests" : "requests");
         var sendClock = Stopwatch.StartNew();
-        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        using var response = await SendAsync(client, request, spec.FollowRedirects, Expand(auth.Key), timeout.Token);
+        using var redirectedRequest = response.RequestMessage == request ? null : response.RequestMessage;
+        var finalRequest = response.RequestMessage ?? request;
         sendClock.Stop();
         var downloadClock = Stopwatch.StartNew();
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
@@ -122,15 +133,48 @@ public sealed class RequestExecutor(IHttpClientFactory factory)
             return new CookieInfo(separator < 0 ? parts[0] : parts[0][..separator],
                 separator < 0 ? "" : parts[0][(separator + 1)..], parts.Length > 1 ? parts[1].Trim() : "", raw);
         }).ToList();
-        var trace = new RequestTrace(uri.ToString(), method, $"HTTP/{response.Version}", sentHeaders, bodyPreview,
+        var trace = new RequestTrace(DisplayUrl(finalRequest.RequestUri!, spec.ShowSensitiveTrace, Expand(auth.Key)), finalRequest.Method.Method, $"HTTP/{response.Version}", TraceHeaders(finalRequest), finalRequest.Content is null ? "" : bodyPreview,
         [
             new("准备请求", prepareMs, "变量替换、参数、授权和请求头"),
             new("等待响应头", sendClock.ElapsedMilliseconds, "包含连接建立、TLS 握手、上传及服务端处理；连接复用时部分步骤不会发生"),
             new("读取响应体", downloadClock.ElapsedMilliseconds, $"读取 {bytes.Length:N0} 字节")
-        ]);
+        ], DisplayUrl(uri, spec.ShowSensitiveTrace, Expand(auth.Key)));
+        var mediaType = response.Content.Headers.ContentType?.MediaType ?? "";
+        var binary = !(mediaType.StartsWith("text/", StringComparison.OrdinalIgnoreCase) || mediaType.Contains("json", StringComparison.OrdinalIgnoreCase) || mediaType.Contains("xml", StringComparison.OrdinalIgnoreCase) || mediaType.Contains("javascript", StringComparison.OrdinalIgnoreCase) || mediaType.Contains("x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase));
         return new ExecuteResult((int)response.StatusCode, response.ReasonPhrase ?? "", overall.ElapsedMilliseconds,
             response.Content.Headers.ContentLength ?? bytes.LongLength, response.Content.Headers.ContentType?.MediaType ?? "",
-            headers, encoding.GetString(bytes), truncated, responseCookies, trace);
+            headers, binary ? "[二进制响应，请下载查看]" : encoding.GetString(bytes), truncated, responseCookies, trace,
+            binary ? Convert.ToBase64String(bytes) : null, Path.GetFileName(response.Content.Headers.ContentDisposition?.FileNameStar ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"') ?? (binary ? "response.bin" : "response.txt")));
+    }
+
+    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, HttpRequestMessage original, bool follow, string authKey, CancellationToken token)
+    {
+        var current = original;
+        try
+        {
+            if (follow && current.Content is not null) await current.Content.ReadAsByteArrayAsync(token);
+            for (var count = 0; ; count++)
+            {
+                var response = await client.SendAsync(current, HttpCompletionOption.ResponseHeadersRead, token);
+                var code = (int)response.StatusCode;
+                if (!follow || code is not (301 or 302 or 303 or 307 or 308) || response.Headers.Location is null) return response;
+                if (count >= 10) { response.Dispose(); throw new HttpRequestException("重定向次数超过 10 次。"); }
+                var nextUri = new Uri(current.RequestUri!, response.Headers.Location);
+                if (nextUri.Scheme is not ("http" or "https")) { response.Dispose(); throw new ArgumentException("重定向目标必须为 HTTP 或 HTTPS。"); }
+                var dropBody = (code == 303 && current.Method != HttpMethod.Head) || ((code is 301 or 302) && current.Method == HttpMethod.Post);
+                var next = new HttpRequestMessage(dropBody ? HttpMethod.Get : current.Method, nextUri);
+                var sameOrigin = nextUri.Scheme == current.RequestUri!.Scheme && nextUri.Authority == current.RequestUri.Authority;
+                foreach (var header in current.Headers)
+                    if (!header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase) && (sameOrigin || (!Sensitive(header.Key) && !header.Key.Equals(authKey, StringComparison.OrdinalIgnoreCase)))) next.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                if (!dropBody && current.Content is not null)
+                {
+                    next.Content = new ByteArrayContent(await current.Content.ReadAsByteArrayAsync(token));
+                    foreach (var header in current.Content.Headers) next.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+                response.Dispose(); if (current != original) current.Dispose(); current = next;
+            }
+        }
+        catch { if (current != original) current.Dispose(); throw; }
     }
 
     private static HttpContent? BuildContent(RequestItem spec, Func<string, string> expand)

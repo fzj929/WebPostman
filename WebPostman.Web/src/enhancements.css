@@ -92,3 +92,23 @@
   .response-tabs button { padding-inline: 5px; }
   .content-type { display: none; }
 }
+.workspace-alert { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 20px; background: #fff8c5; color: #633c01; font-size: 12px; border-bottom: 1px solid #d4a72c; }
+.workspace-alert span { flex: 1; min-width: 220px; }
+.workspace-alert button { background: white; border: 1px solid #d4a72c; border-radius: 5px; padding: 5px 10px; color: #633c01; }
+.sidebar-search { padding: 8px 12px; }
+.sidebar-search input { width: 100%; border: 1px solid #d0d7de; border-radius: 6px; background: white; padding: 8px; font-size: 12px; }
+.request-tabs { display: flex; flex-shrink: 0; overflow-x: auto; min-height: 40px; align-items: stretch; gap: 3px; padding: 5px 12px 0; background: #f6f8fa; border-bottom: 1px solid #d8dee4; }
+.request-tab { display: flex; flex-shrink: 0; max-width: 230px; border: 1px solid transparent; border-radius: 6px 6px 0 0; }
+.request-tab.active { background: white; border-color: #d8dee4; border-bottom-color: white; }
+.request-tab button { border: 0; background: transparent; padding: 8px; font-size: 12px; color: #57606a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.request-tab.active button[role=tab] { color: #0969da; font-weight: 600; }
+.request-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 10px 0; color: #57606a; font-size: 12px; }
+.request-options label { display: flex; align-items: center; gap: 5px; }
+.request-options input[type=number] { width: 65px; padding: 5px; border: 1px solid #d0d7de; border-radius: 4px; }
+.response-tools { padding: 9px 15px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border-bottom: 1px solid #d8dee4; font-size: 12px; color: #57606a; }
+.response-tools input { flex: 1; min-width: 130px; padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 4px; }
+.response-body mark { background: #fff099; color: #24292f; }
+.dirty-badge { color: #9a6700; font-size: 11px; white-space: nowrap; }
+.header-actions { flex-wrap: wrap; }
+.main-panel { min-width: 0; }
+@media (max-width: 760px) { .sidebar-search { padding: 5px 12px; } .header-actions { justify-content: flex-end; } .editor-header { flex-wrap: wrap; gap: 8px; } }
