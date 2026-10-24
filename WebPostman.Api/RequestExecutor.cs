@@ -3,7 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace MyPostman.Api;
+namespace WebPostman.Api;
 
 public sealed class RequestExecutor(IHttpClientFactory factory)
 {
@@ -70,7 +70,7 @@ public sealed class RequestExecutor(IHttpClientFactory factory)
                 throw new ArgumentException("Cookie 设置无效。");
         }
         if (!request.Headers.Contains("Accept")) request.Headers.TryAddWithoutValidation("Accept", "*/*");
-        if (!request.Headers.Contains("User-Agent")) request.Headers.TryAddWithoutValidation("User-Agent", "MyPostman/1.0");
+        if (!request.Headers.Contains("User-Agent")) request.Headers.TryAddWithoutValidation("User-Agent", "WebPostman/1.0");
         if (!request.Headers.Contains("Accept-Encoding")) request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
         var prepareMs = overall.ElapsedMilliseconds;
         var contentHeaders = request.Content is null

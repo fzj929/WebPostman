@@ -53,7 +53,7 @@ const formattedBody = computed(() => {
 })
 const methodClass = (method: string) => `method-${method.toLowerCase()}`
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
-const defaultHeaders = [{ key: 'Accept', value: '*/*' }, { key: 'User-Agent', value: 'MyPostman/1.0' }, { key: 'Accept-Encoding', value: 'gzip, deflate, br' }]
+const defaultHeaders = [{ key: 'Accept', value: '*/*' }, { key: 'User-Agent', value: 'WebPostman/1.0' }, { key: 'Accept-Encoding', value: 'gzip, deflate, br' }]
 const commonHeaderNames = [
   'Accept', 'Accept-Encoding', 'Accept-Language', 'Authorization', 'Cache-Control',
   'Content-Type', 'Cookie', 'If-Match', 'If-None-Match', 'Origin', 'Pragma',
@@ -273,7 +273,7 @@ function exportWorkspace() {
   const blob = new Blob([JSON.stringify(workspace.value, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url; a.download = 'mypostman-workspace.json'; a.click()
+  a.href = url; a.download = 'webpostman-workspace.json'; a.click()
   URL.revokeObjectURL(url)
 }
 
@@ -354,7 +354,7 @@ onMounted(async () => {
 <template>
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand"><button class="sidebar-toggle" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="sidebarCollapsed = !sidebarCollapsed">☰</button><div class="brand-mark">◆</div><span>MyPostman</span><small>API WORKSPACE</small></div>
+      <div class="brand"><button class="sidebar-toggle" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="sidebarCollapsed = !sidebarCollapsed">☰</button><div class="brand-mark">◆</div><span>WebPostman</span><small>API WORKSPACE</small></div>
       <div class="topbar-right">
         <span class="local-badge"><span class="live-dot"></span> 本地工作区</span>
         <button class="top-link" @click="showEnvironments = true">环境变量</button>

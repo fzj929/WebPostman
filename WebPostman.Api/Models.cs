@@ -1,4 +1,4 @@
-namespace MyPostman.Api;
+namespace WebPostman.Api;
 
 public sealed record KeyValueRow(string Id, string Key, string Value, bool Enabled = true);
 public sealed record AuthSettings(string Type = "none", string Username = "", string Password = "", string Token = "", string Key = "", string Value = "", string In = "header");

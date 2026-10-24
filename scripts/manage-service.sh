@@ -12,12 +12,12 @@ port="${2:-5078}"
 [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || usage
 
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-web_project="$project_root/MyPostman.Web"
-api_project="$project_root/MyPostman.Api/MyPostman.Api.csproj"
-service_name='mypostman.service'
-service_user='mypostman'
-install_directory='/opt/mypostman'
-data_directory='/var/lib/mypostman'
+web_project="$project_root/WebPostman.Web"
+api_project="$project_root/WebPostman.Api/WebPostman.Api.csproj"
+service_name='webpostman.service'
+service_user='webpostman'
+install_directory='/opt/webpostman'
+data_directory='/var/lib/webpostman'
 unit_file="/etc/systemd/system/$service_name"
 listen_url="http://127.0.0.1:$port"
 
@@ -64,7 +64,7 @@ case "$action" in
     install -d -o "$service_user" -g "$service_user" -m 0750 "$data_directory"
     cat > "$unit_file" <<UNIT
 [Unit]
-Description=MyPostman API Workspace
+Description=WebPostman API Workspace
 After=network.target
 
 [Service]
@@ -72,9 +72,9 @@ Type=notify
 User=$service_user
 Group=$service_user
 WorkingDirectory=$install_directory
-ExecStart=$dotnet_path $install_directory/MyPostman.Api.dll
-Environment=MyPostman__DataDirectory=$data_directory
-Environment=MyPostman__ListenUrl=$listen_url
+ExecStart=$dotnet_path $install_directory/WebPostman.Api.dll
+Environment=WebPostman__DataDirectory=$data_directory
+Environment=WebPostman__ListenUrl=$listen_url
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -87,7 +87,7 @@ WantedBy=multi-user.target
 UNIT
     systemctl daemon-reload
     systemctl enable --now "$service_name"
-    echo "MyPostman is running at $listen_url"
+    echo "WebPostman is running at $listen_url"
     echo "Data directory: $data_directory"
     ;;
   uninstall)
@@ -111,8 +111,8 @@ UNIT
     ;;
   run)
     build_app
-    export MyPostman__ListenUrl="$listen_url"
-    echo "Running MyPostman in the foreground at $listen_url (Ctrl+C to stop)."
+    export WebPostman__ListenUrl="$listen_url"
+    echo "Running WebPostman in the foreground at $listen_url (Ctrl+C to stop)."
     dotnet run --project "$api_project" --no-launch-profile
     ;;
 esac

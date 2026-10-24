@@ -4,5 +4,5 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: { proxy: { '/api': 'http://127.0.0.1:5078' } },
-  build: { outDir: '../MyPostman.Api/wwwroot', emptyOutDir: true },
+  build: { outDir: '../WebPostman.Api/wwwroot', emptyOutDir: true },
 })

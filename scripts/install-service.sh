@@ -19,10 +19,10 @@ fi
 
 script_dir="$(cd -- "${BASH_SOURCE[0]%/*}" && pwd)"
 publish_directory="$(cd -- "$script_dir/.." && pwd)"
-application="$publish_directory/MyPostman.Api.dll"
+application="$publish_directory/WebPostman.Api.dll"
 data_directory="$publish_directory/App_Data"
-service_name='mypostman.service'
-service_user='mypostman'
+service_name='webpostman.service'
+service_user='webpostman'
 unit_file="/etc/systemd/system/$service_name"
 listen_url="http://$listen_address:$port"
 
@@ -45,7 +45,7 @@ chown -R "$service_user:$service_user" "$data_directory"
 
 cat > "$unit_file" <<UNIT
 [Unit]
-Description=MyPostman API Workspace
+Description=WebPostman API Workspace
 After=network.target
 
 [Service]
@@ -54,8 +54,8 @@ User=$service_user
 Group=$service_user
 WorkingDirectory=$publish_directory
 ExecStart="$dotnet_path" "$application"
-Environment="MyPostman__DataDirectory=$data_directory"
-Environment="MyPostman__ListenUrl=$listen_url"
+Environment="WebPostman__DataDirectory=$data_directory"
+Environment="WebPostman__ListenUrl=$listen_url"
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -69,6 +69,6 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now "$service_name"
-echo "MyPostman service installed and running at $listen_url"
+echo "WebPostman service installed and running at $listen_url"
 echo "Application directory: $publish_directory"
 echo "Data directory: $data_directory"

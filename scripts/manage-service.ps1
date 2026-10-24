@@ -9,12 +9,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$serviceName = 'MyPostman'
+$serviceName = 'WebPostman'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$webProject = Join-Path $projectRoot 'MyPostman.Web'
-$apiProject = Join-Path $projectRoot 'MyPostman.Api/MyPostman.Api.csproj'
-$installDirectory = Join-Path $env:ProgramFiles 'MyPostman'
-$dataDirectory = Join-Path $env:ProgramData 'MyPostman'
+$webProject = Join-Path $projectRoot 'WebPostman.Web'
+$apiProject = Join-Path $projectRoot 'WebPostman.Api/WebPostman.Api.csproj'
+$installDirectory = Join-Path $env:ProgramFiles 'WebPostman'
+$dataDirectory = Join-Path $env:ProgramData 'WebPostman'
 $listenUrl = "http://127.0.0.1:$Port"
 
 function Invoke-CheckedCommand {
@@ -70,9 +70,9 @@ switch ($Action) {
 
         # LocalService must be able to create and update its SQLite database.
         Invoke-CheckedCommand 'icacls.exe' @($dataDirectory, '/grant', '*S-1-5-19:(OI)(CI)M', '/T')
-        $executable = Join-Path $installDirectory 'MyPostman.Api.exe'
+        $executable = Join-Path $installDirectory 'WebPostman.Api.exe'
         if (-not (Get-InstalledService)) {
-            New-Service -Name $serviceName -DisplayName 'MyPostman API Workspace' -BinaryPathName "`"$executable`"" -StartupType Automatic | Out-Null
+            New-Service -Name $serviceName -DisplayName 'WebPostman API Workspace' -BinaryPathName "`"$executable`"" -StartupType Automatic | Out-Null
         }
         Invoke-CheckedCommand 'sc.exe' @(
             'config', $serviceName,
@@ -82,12 +82,12 @@ switch ($Action) {
         )
         $registryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
         New-ItemProperty -Path $registryPath -Name Environment -PropertyType MultiString -Value @(
-            "MyPostman__DataDirectory=$dataDirectory",
-            "MyPostman__ListenUrl=$listenUrl"
+            "WebPostman__DataDirectory=$dataDirectory",
+            "WebPostman__ListenUrl=$listenUrl"
         ) -Force | Out-Null
         Start-Service -Name $serviceName
         (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-        Write-Host "MyPostman is running at $listenUrl"
+        Write-Host "WebPostman is running at $listenUrl"
         Write-Host "Data directory: $dataDirectory"
     }
     'uninstall' {
@@ -123,8 +123,8 @@ switch ($Action) {
     }
     'run' {
         Build-WebApplication
-        $env:MyPostman__ListenUrl = $listenUrl
-        Write-Host "Running MyPostman in the foreground at $listenUrl (Ctrl+C to stop)."
+        $env:WebPostman__ListenUrl = $listenUrl
+        Write-Host "Running WebPostman in the foreground at $listenUrl (Ctrl+C to stop)."
         Invoke-CheckedCommand 'dotnet' @('run', '--project', $apiProject, '--no-launch-profile')
     }
 }

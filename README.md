@@ -1,4 +1,4 @@
-# MyPostman
+# WebPostman
 
 本地运行的 API 请求工作台。后端使用 .NET 8，页面使用 Vue 3，数据保存在本地 SQLite。
 
@@ -7,13 +7,13 @@
 需要 .NET 8 SDK、Node.js 20.19+。
 
 ```powershell
-dotnet run --project MyPostman.Api
+dotnet run --project WebPostman.Api
 ```
 
 开发前端时，在另一个终端运行：
 
 ```powershell
-cd MyPostman.Web
+cd WebPostman.Web
 npm install
 npm run dev
 ```
@@ -23,20 +23,20 @@ npm run dev
 制作单端口版本：
 
 ```powershell
-cd MyPostman.Web
+cd WebPostman.Web
 npm install
 npm run build
 cd ..
-dotnet run --project MyPostman.Api
+dotnet run --project WebPostman.Api
 ```
 
-浏览器打开 `http://127.0.0.1:5078`。应用只监听本机地址。数据文件在 `MyPostman.Api/App_Data/workspace.db`。
+浏览器打开 `http://127.0.0.1:5078`。应用只监听本机地址。数据文件在 `WebPostman.Api/App_Data/workspace.db`。
 
 ## 系统服务
 
 ### 从发布目录直接安装
 
-发布目录中的独立安装脚本只注册并启动服务，不执行 npm、前端编译或 `dotnet publish`。请保持 `scripts` 与 `MyPostman.Api.exe`、`MyPostman.Api.dll` 位于截图所示的相对位置。端口参数可省略，默认使用 `5078`：
+发布目录中的独立安装脚本只注册并启动服务，不执行 npm、前端编译或 `dotnet publish`。请保持 `scripts` 与 `WebPostman.Api.exe`、`WebPostman.Api.dll` 位于截图所示的相对位置。端口参数可省略，默认使用 `5078`：
 
 ```powershell
 # Windows：管理员 PowerShell
@@ -54,11 +54,11 @@ sudo bash scripts/install-service.sh 5080 0.0.0.0
 
 第二个参数为监听地址。使用 `0.0.0.0` 可接受来自本机所有 IPv4 网络接口的连接；省略时只监听 `127.0.0.1`。重新执行脚本会更新并重启已经安装的服务，不会重新编译程序。
 
-程序直接从当前发布目录运行，SQLite 数据保存在该目录的 `App_Data` 中。安装服务后不要移动或删除发布目录。Windows 服务以 LocalService 身份运行；Linux 服务以 `mypostman` 用户运行。框架依赖发布需要目标机器安装 .NET 8 ASP.NET Core Runtime，Linux 还需要 systemd。
+程序直接从当前发布目录运行，SQLite 数据保存在该目录的 `App_Data` 中。安装服务后不要移动或删除发布目录。Windows 服务以 LocalService 身份运行；Linux 服务以 `webpostman` 用户运行。框架依赖发布需要目标机器安装 .NET 8 ASP.NET Core Runtime，Linux 还需要 systemd。
 
 ### 从源码构建并管理服务
 
-`manage-service` 脚本的 `install` 操作适用于完整源码目录：它会安装前端依赖、构建 Vue 页面、执行 `dotnet publish`，再注册服务。此方式需要 .NET 8 SDK、Node.js 20.19+ 和 npm。存在 `MyPostman.Web/package-lock.json` 时使用 `npm ci`，锁文件缺失时自动改用 `npm install`。
+`manage-service` 脚本的 `install` 操作适用于完整源码目录：它会安装前端依赖、构建 Vue 页面、执行 `dotnet publish`，再注册服务。此方式需要 .NET 8 SDK、Node.js 20.19+ 和 npm。存在 `WebPostman.Web/package-lock.json` 时使用 `npm ci`，锁文件缺失时自动改用 `npm install`。
 
 默认监听 `http://127.0.0.1:5078`，可在 `install` 或 `run` 后传入其他端口，例如 `install 5080`。切换端口时重新安装服务。
 
@@ -94,7 +94,7 @@ sudo bash scripts/manage-service.sh uninstall
 bash scripts/manage-service.sh run
 ```
 
-通过源码管理脚本安装时，Windows 程序发布在 `%ProgramFiles%\MyPostman`、数据位于 `%ProgramData%\MyPostman`；Linux 程序发布在 `/opt/mypostman`、数据位于 `/var/lib/mypostman`。Windows 服务名为 `MyPostman`，Linux 服务名为 `mypostman.service`。再次执行安装可更新服务配置，`uninstall` 只移除服务注册并保留程序文件和工作区数据。
+通过源码管理脚本安装时，Windows 程序发布在 `%ProgramFiles%\WebPostman`、数据位于 `%ProgramData%\WebPostman`；Linux 程序发布在 `/opt/webpostman`、数据位于 `/var/lib/webpostman`。Windows 服务名为 `WebPostman`，Linux 服务名为 `webpostman.service`。再次执行安装可更新服务配置，`uninstall` 只移除服务注册并保留程序文件和工作区数据。
 
 ## 功能
 
@@ -108,7 +108,7 @@ bash scripts/manage-service.sh run
 
 认证值及历史快照以明文保存在本机 SQLite 工作区及导出的 JSON 中。请妥善保管这些文件；不要将本应用直接作为公网服务部署。
 
-测试时可通过环境变量 `MyPostman__ListenUrl` 和 `MyPostman__DataDirectory` 指定独立端口与数据目录，避免更改已有工作区。
+测试时可通过环境变量 `WebPostman__ListenUrl` 和 `WebPostman__DataDirectory` 指定独立端口与数据目录，避免更改已有工作区。
 
 ## 许可证
 

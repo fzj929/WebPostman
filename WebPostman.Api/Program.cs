@@ -1,10 +1,10 @@
 using System.Text.Json;
-using MyPostman.Api;
+using WebPostman.Api;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseWindowsService(options => options.ServiceName = "MyPostman");
+builder.Host.UseWindowsService(options => options.ServiceName = "WebPostman");
 builder.Host.UseSystemd();
-builder.WebHost.UseUrls(builder.Configuration["MyPostman:ListenUrl"] ?? "http://127.0.0.1:5078");
+builder.WebHost.UseUrls(builder.Configuration["WebPostman:ListenUrl"] ?? "http://127.0.0.1:5078");
 builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 builder.Services.AddSingleton<WorkspaceStore>();

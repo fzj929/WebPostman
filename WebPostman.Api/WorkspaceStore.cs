@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
-namespace MyPostman.Api;
+namespace WebPostman.Api;
 
 public sealed class WorkspaceStore
 {
@@ -11,7 +11,7 @@ public sealed class WorkspaceStore
 
     public WorkspaceStore(IWebHostEnvironment env, IConfiguration configuration)
     {
-        var directory = configuration["MyPostman:DataDirectory"] ?? Path.Combine(env.ContentRootPath, "App_Data");
+        var directory = configuration["WebPostman:DataDirectory"] ?? Path.Combine(env.ContentRootPath, "App_Data");
         Directory.CreateDirectory(directory);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(directory, "workspace.db") }.ToString();
         using var connection = new SqliteConnection(_connectionString);
