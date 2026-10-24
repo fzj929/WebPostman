@@ -132,16 +132,160 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  linux:
+    name: Linux x64 portable
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      # Use the installer shipped with this workflow, including when rebuilding old tags.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts/install-service.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Validate version tag
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z.-]+)?$ ]] || {
+            echo 'Expected a version tag such as v1.0 or v1.0.1.' >&2
+            exit 1
+          }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: WebPostman.Web/package-lock.json
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build frontend
+        working-directory: WebPostman.Web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Publish with bundled .NET runtime
+        run: |
+          dotnet publish WebPostman.Api/WebPostman.Api.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -o dist/WebPostman
+
+      - name: Add launcher and instructions
+        run: |
+          cat > dist/WebPostman/start-webpostman.sh <<'LAUNCHER'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+          echo 'WebPostman: http://127.0.0.1:5078'
+          echo 'Press Ctrl+C to stop.'
+          exec ./WebPostman.Api "$@"
+          LAUNCHER
+          cat > dist/WebPostman/READ-ME.txt <<'INSTRUCTIONS'
+          WebPostman - Linux x64 portable edition
+
+          Extract the entire archive to a writable folder and run:
+            cd WebPostman
+            ./start-webpostman.sh
+          Open http://127.0.0.1:5078 in your browser. Press Ctrl+C to stop.
+
+          Includes the frontend and .NET runtime. No Node.js or .NET installation required.
+          Requires a glibc-based x64 Linux distribution with .NET 8 native dependencies
+          (including ICU, OpenSSL and zlib); Alpine/musl is not supported by this package.
+          Workspace data: App_Data/workspace.db. Back up App_Data before updating.
+
+          Optional systemd service:
+            sudo bash scripts/install-service.sh
+          The installer uses the bundled executable and does not require dotnet.
+          INSTRUCTIONS
+          cp .release-tools/scripts/install-service.sh dist/WebPostman/scripts/install-service.sh
+          cp LICENSE dist/WebPostman/LICENSE
+          chmod +x dist/WebPostman/WebPostman.Api dist/WebPostman/start-webpostman.sh dist/WebPostman/scripts/*.sh
+          bash -n dist/WebPostman/start-webpostman.sh dist/WebPostman/scripts/install-service.sh
+
+      - name: Archive and test extracted application
+        run: |
+          archive="WebPostman-$RELEASE_TAG-linux-x64.tar.gz"
+          tar -czf "dist/$archive" -C dist WebPostman
+          (cd dist && sha256sum "$archive" > SHA256SUMS-linux-x64.txt)
+          test_dir="$(mktemp -d)"
+          tar -xzf "dist/$archive" -C "$test_dir"
+          export WebPostman__ListenUrl=http://127.0.0.1:15078
+          export WebPostman__DataDirectory="$test_dir/data"
+          # Exercise the actual launcher from outside the application directory.
+          "$test_dir/WebPostman/start-webpostman.sh" > "$test_dir/app.log" 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true; wait "$app_pid" 2>/dev/null || true; cat "$test_dir/app.log"' EXIT
+          ready=false
+          for attempt in {1..30}; do
+            kill -0 "$app_pid" || { echo 'Application exited before startup.' >&2; exit 1; }
+            if curl -fsS http://127.0.0.1:15078/ -o "$test_dir/index.html" && grep -q '<title>WebPostman' "$test_dir/index.html"; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          [[ "$ready" == true ]] || { echo 'Packaged frontend did not become ready.' >&2; exit 1; }
+          curl -fsS http://127.0.0.1:15078/api/workspace | jq -e '.collections | type == "array"'
+          test -s "$test_dir/data/workspace.db"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WebPostman-${{ env.RELEASE_TAG }}-linux-x64
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS-linux-x64.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release downloads
+    needs: [windows, linux]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: WebPostman-${{ env.RELEASE_TAG }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify both packages and combine checksums
+        working-directory: dist
+        run: |
+          sed -i 's/\r$//' SHA256SUMS.txt
+          cat SHA256SUMS-linux-x64.txt >> SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release view $env:RELEASE_TAG *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $env:RELEASE_TAG --verify-tag --title "WebPostman $env:RELEASE_TAG" --notes 'Windows x64 portable build. Download the ZIP, extract all files, and double-click Start-WebPostman.cmd. Includes the .NET runtime and frontend; no SDK installation required.'
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          $archives = @(Get-ChildItem dist/*.zip | ForEach-Object FullName)
-          gh release upload $env:RELEASE_TAG @archives dist/SHA256SUMS.txt --clobber
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cat > release-notes.txt <<'NOTES'
+          Portable packages include the frontend and .NET runtime.
+
+          - Windows x64: extract the ZIP and double-click `Start-WebPostman.cmd`.
+          - Linux x64 (glibc): extract the tar.gz, then run `cd WebPostman && ./start-webpostman.sh`.
+
+          Open http://127.0.0.1:5078. Workspace data is stored in `App_Data/workspace.db`; back up this directory before updating. SHA256SUMS.txt covers both packages.
+          NOTES
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "WebPostman $RELEASE_TAG" --notes-file release-notes.txt
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.zip dist/*.tar.gz dist/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --notes-file release-notes.txt

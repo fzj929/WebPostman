@@ -31,8 +31,13 @@ listen_url="http://$listen_address:$port"
   exit 1
 }
 command -v systemctl >/dev/null || { echo 'systemd is required.' >&2; exit 1; }
-command -v dotnet >/dev/null || { echo '.NET 8 runtime is required.' >&2; exit 1; }
-dotnet_path="$(command -v dotnet)"
+if [[ -x "$publish_directory/WebPostman.Api" && -f "$publish_directory/libhostfxr.so" ]]; then
+  exec_start="\"$publish_directory/WebPostman.Api\""
+else
+  command -v dotnet >/dev/null || { echo '.NET 8 runtime is required for a framework-dependent publish.' >&2; exit 1; }
+  dotnet_path="$(command -v dotnet)"
+  exec_start="\"$dotnet_path\" \"$application\""
+fi
 
 if systemctl list-unit-files "$service_name" --no-legend 2>/dev/null | grep -q "^$service_name"; then
   systemctl stop "$service_name"
@@ -53,7 +58,7 @@ Type=notify
 User=$service_user
 Group=$service_user
 WorkingDirectory=$publish_directory
-ExecStart="$dotnet_path" "$application"
+ExecStart=$exec_start
 Environment="WebPostman__DataDirectory=$data_directory"
 Environment="WebPostman__ListenUrl=$listen_url"
 Restart=on-failure
