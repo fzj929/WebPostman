@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
-import type { Auth, Collection, Environment, ExecuteResult, Folder, History, RequestItem, Row, Workspace, UploadFile } from './types'
+import type { Auth, Collection, Environment, ExecuteResult, Folder, History, RequestItem, Row, Workspace, UploadFile, UserInfo, ShareSummary, SharedItem } from './types'
 import { newAuth, newRequest, newRow, uid } from './types'
 import { curlCommand, folderPath, parseImport, resolveAuth, workspaceChanges } from './workspace-utils'
+import { readGuestWorkspace, saveGuestWorkspace, readGuestHistory, addGuestHistory, importedGuestRevision, markGuestImported } from './browser-store'
 
 const workspace = ref<Workspace>({ collections: [], environments: [], history: [] })
 const selectedCollectionId = ref('')
@@ -12,7 +13,7 @@ const draft = ref<RequestItem>(newRequest())
 const activeTab = ref<'params' | 'auth' | 'headers' | 'cookies' | 'body'>('params')
 const openHeaderPickerId = ref('')
 const responseTab = ref<'body' | 'headers' | 'cookies' | 'trace'>('body')
-const sidebarTab = ref<'collections' | 'history'>('collections')
+const sidebarTab = ref<'collections' | 'history' | 'shares'>('collections')
 const sidebarCollapsed = ref(false)
 const folderCreationCollectionId = ref('')
 const newFolderName = ref('')
@@ -93,6 +94,42 @@ const responseSearch = ref('')
 const conflict = ref(false)
 const saveError = ref('')
 const historyTotal = ref(0)
+const currentUser = ref<UserInfo | null>(null)
+const workspaceLoading = ref(true)
+const showAuth = ref(false)
+const authMode = ref<'login' | 'register'>('login')
+const authEmail = ref('')
+const authPassword = ref('')
+const authConfirmPassword = ref('')
+const authBusy = ref(false)
+const authError = ref('')
+const guestAvailable = ref(false)
+const guestImportBusy = ref(false)
+const sessionChanged = ref(false)
+let storageGeneration = 0
+const shares = ref<ShareSummary[]>([])
+const shareTotal = ref(0)
+const shareQuery = ref('')
+const shareKind = ref('')
+const shareMine = ref(false)
+const sharesBusy = ref(false)
+const sharesError = ref('')
+const shareDetail = ref<SharedItem | null>(null)
+const shareDestination = ref('')
+const showShare = ref(false)
+const shareDraft = ref({ kind: 'request', collectionId: '', requestId: '', title: '', description: '', revision: -1 })
+const sharePreview = ref<Collection | null>(null)
+const shareBusy = ref(false)
+const shareError = ref('')
+let sharesGeneration = 0
+let detailGeneration = 0
+const storageOwner = () => currentUser.value?.id ?? 'guest'
+async function accountFetch(url: string, options: RequestInit = {}, owner = storageOwner()) {
+  const result = await fetch(url, { ...options, headers: { ...Object.fromEntries(new Headers(options.headers).entries()), 'X-WebPostman-User': owner } })
+  if (result.status === 401 && currentUser.value) { authMode.value = 'login'; authEmail.value = currentUser.value.email; authError.value = '登录已失效，请重新登录同一账户，当前草稿已保留'; showAuth.value = true }
+  return result
+}
+
 const savedWorkspace = ref<Workspace>({ collections: [], environments: [], history: [], revision: 0 })
 const editorSignature = () => JSON.stringify([draft.value, selectedCollectionId.value])
 const dirty = computed(() => editorSignature() !== baseline.value)
@@ -154,38 +191,202 @@ function folderRows(collection: Collection) {
   }; visit(); return rows
 }
 function persist(): Promise<boolean> {
+  const owner = storageOwner(); const generation = storageGeneration
   const snapshot: Workspace = { collections: copy(workspace.value.collections), environments: copy(workspace.value.environments), history: [], revision: workspace.value.revision }; pendingSaves++; saving.value = true
   saveQueue = saveQueue.then(async () => {
     try {
+      if (generation !== storageGeneration || owner !== storageOwner()) throw new Error('账户已切换，此次保存已取消')
+      if (sessionChanged.value) throw new Error('账户已在其他页面切换，请先导出备份再重新载入')
       if (conflict.value) throw new Error('请先处理工作区冲突，未保存修改已保留')
       const changes = workspaceChanges(savedWorkspace.value, snapshot)
       if (!changes.collections.length && !changes.environments.length && !changes.deletedCollections.length && !changes.deletedEnvironments.length) return true
-      const result = await fetch('/api/workspace', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes) })
-      const data = await result.json()
-      if (result.status === 409) conflict.value = true
-      if (!result.ok) throw new Error(data.error ?? `保存失败 (${result.status})`)
-      snapshot.revision = data.revision; savedWorkspace.value = snapshot; workspace.value.revision = data.revision; saveError.value = ''; return true
+      let revision: number
+      if (!currentUser.value) {
+        try { revision = await saveGuestWorkspace(snapshot, savedWorkspace.value.revision ?? 0) }
+        catch (ex) { if (ex instanceof Error && ex.message.includes('其他页面')) conflict.value = true; throw ex }
+      } else {
+        const result = await accountFetch('/api/workspace', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes) }, owner)
+        const data = await result.json()
+        if (result.status === 409) { conflict.value = true; sessionChanged.value = data.code === 'account_changed' }
+        if (!result.ok) throw new Error(data.error ?? `保存失败 (${result.status})`)
+        revision = data.revision
+      }
+      snapshot.revision = revision; savedWorkspace.value = snapshot; workspace.value.revision = revision; saveError.value = ''; return true
     } catch (ex) { saveError.value = ex instanceof Error ? ex.message : '保存失败'; return false }
     finally { pendingSaves--; saving.value = pendingSaves > 0 }
   }); return saveQueue
 }
 async function loadHistory(append = false) {
-  const result = await fetch(`/api/history?offset=${append ? workspace.value.history.length : 0}&limit=50`)
+  const generation = storageGeneration
+  if (!currentUser.value) {
+    const history = await readGuestHistory(); if (generation !== storageGeneration) return
+    historyTotal.value = history.length; workspace.value.history = history.slice(0, append ? workspace.value.history.length + 50 : 50); return
+  }
+  const result = await accountFetch(`/api/history?offset=${append ? workspace.value.history.length : 0}&limit=50`)
   if (!result.ok) throw new Error('加载历史记录失败')
-  const page = await result.json(); workspace.value.history = append ? [...workspace.value.history, ...page.items] : page.items; historyTotal.value = page.total
+  const page = await result.json(); if (generation !== storageGeneration) return
+  workspace.value.history = append ? [...workspace.value.history, ...page.items] : page.items; historyTotal.value = page.total
+}
+async function loadWorkspace() {
+  workspaceLoading.value = true
+  try {
+    const generation = ++storageGeneration
+    for (const tab of editorTabs.value) tab.controller?.abort()
+    requestController?.abort(); editorTabs.value = []; activeEditorId.value = ''; busy.value = false; requestController = null
+    let loaded: Workspace
+    if (currentUser.value) {
+      const result = await accountFetch('/api/workspace'); if (!result.ok) throw new Error('无法加载账户工作区，请重新登录')
+      loaded = await result.json()
+    } else loaded = await readGuestWorkspace()
+    if (generation !== storageGeneration) return
+    workspace.value = loaded; savedWorkspace.value = copy(loaded); conflict.value = false; sessionChanged.value = false; saveError.value = ''
+    activeEnvironmentId.value = ''; showEnvironments.value = false; shareDetail.value = null; detailGeneration++
+    const collection = loaded.collections[0]
+    if (collection?.requests[0]) openRequest(collection, collection.requests[0]); else addEditor(newRequest(), collection?.id ?? '')
+    await loadHistory()
+    try { const guest = await readGuestWorkspace(); const imported = currentUser.value ? await importedGuestRevision(currentUser.value.id) : undefined; guestAvailable.value = !!currentUser.value && (guest.collections.length > 0 || guest.environments.length > 0) && imported !== (guest.revision ?? 0) } catch { guestAvailable.value = false }
+  } finally { workspaceLoading.value = false }
 }
 async function reloadWorkspace() {
   if ((workspaceDirty.value || editorTabs.value.some(tabDirty)) && !confirm('重新载入会丢弃未保存修改。请先导出备份，是否继续？')) return
   try {
     await saveQueue
-    const result = await fetch('/api/workspace'); if (!result.ok) throw new Error('无法连接后端服务')
-    for (const tab of editorTabs.value) tab.controller?.abort()
-    requestController?.abort(); editorTabs.value = []; activeEditorId.value = ''; busy.value = false; requestController = null
-    workspace.value = await result.json(); savedWorkspace.value = copy(workspace.value); conflict.value = false; saveError.value = ''
-    const collection = workspace.value.collections[0]
-    if (collection?.requests[0]) openRequest(collection, collection.requests[0]); else addEditor(newRequest(), collection?.id ?? '')
-    await loadHistory()
-  } catch (ex) { saveError.value = ex instanceof Error ? ex.message : '加载失败' }
+    workspaceLoading.value = true
+    const result = await fetch('/api/auth/me'); if (!result.ok) throw new Error('无法连接后端服务')
+    currentUser.value = (await result.json()).user; await loadWorkspace()
+  } catch (ex) {
+    if (!currentUser.value) { try { await loadWorkspace() } catch { if (!editorTabs.value.length) addEditor(newRequest(), '') } }
+    saveError.value = ex instanceof Error ? ex.message : '加载失败'
+  } finally { workspaceLoading.value = false }
+}
+async function preserveDraftsBeforeSwitch() {
+  await saveQueue; stashEditor()
+  for (const tab of editorTabs.value.filter(tabDirty)) {
+    let collection = workspace.value.collections.find(x => x.id === tab.collectionId)
+    if (!collection) { collection = { id: uid(), name: '我的草稿', auth: newAuth(), folders: [], requests: [] }; workspace.value.collections.push(collection) }
+    const request = copy(tab.draft); delete request.files
+    if (tab.originalCollectionId && tab.originalCollectionId !== collection.id) { const previous = workspace.value.collections.find(x => x.id === tab.originalCollectionId); if (previous) previous.requests = previous.requests.filter(x => x.id !== request.id) }
+    if (!collection.folders.some(x => x.id === request.folderId)) request.folderId = ''
+    const index = collection.requests.findIndex(x => x.id === request.id)
+    if (index >= 0) collection.requests[index] = request; else collection.requests.push(request)
+    tab.collectionId = collection.id; tab.originalCollectionId = collection.id; tab.requestId = request.id; tab.draft = request
+    if (tab.id === activeEditorId.value) { selectedCollectionId.value = collection.id; originalCollectionId.value = collection.id; selectedRequestId.value = request.id; draft.value = request }
+  }
+  if (workspaceDirty.value && !await persist()) throw new Error('切换前保存失败，请先导出备份，或重新登录同一邮箱继续保存')
+  for (const tab of editorTabs.value) { tab.baseline = JSON.stringify([tab.draft, tab.collectionId]); if (tab.id === activeEditorId.value) baseline.value = tab.baseline }
+}
+async function submitAuth() {
+  if (authBusy.value) return
+  authBusy.value = true; authError.value = ''
+  try {
+    if (authMode.value === 'register' && authPassword.value !== authConfirmPassword.value) throw new Error('两次输入的密码不一致')
+    if (!currentUser.value || currentUser.value.email !== authEmail.value.trim().toLowerCase()) await preserveDraftsBeforeSwitch()
+    const result = await fetch(`/api/auth/${authMode.value}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: authEmail.value.trim(), password: authPassword.value, confirmPassword: authConfirmPassword.value }) })
+    if (result.status === 429) throw new Error('操作过于频繁，请稍后再试')
+    const data = await result.json(); if (!result.ok) throw new Error(data.error ?? '登录失败')
+    const sameUser = currentUser.value?.id === data.user.id
+    currentUser.value = data.user; authPassword.value = ''; authConfirmPassword.value = ''; showAuth.value = false
+    if (!sameUser) await loadWorkspace()
+    flash(authMode.value === 'register' ? '注册成功，已登录个人工作区' : '已登录个人工作区')
+  } catch (ex) { authError.value = ex instanceof Error ? ex.message : '登录失败' }
+  finally { authBusy.value = false }
+}
+function openAuth() { authMode.value = 'login'; authError.value = ''; authEmail.value = currentUser.value?.email ?? ''; authPassword.value = ''; authConfirmPassword.value = ''; showAuth.value = true }
+async function logout() {
+  try {
+    if (sessionChanged.value) { if (!confirm('账户已变化，退出前请先导出草稿。继续会重新载入本机数据。')) return }
+    else await preserveDraftsBeforeSwitch()
+    const result = await fetch('/api/auth/logout', { method: 'POST' }); if (!result.ok) throw new Error('退出失败')
+    currentUser.value = null; await loadWorkspace(); flash('已退出，切换到本机浏览器工作区')
+  } catch (ex) { saveError.value = ex instanceof Error ? ex.message : '退出失败' }
+}
+async function importGuestData() {
+  if (!currentUser.value || saving.value || guestImportBusy.value) return
+  guestImportBusy.value = true
+  try {
+    if (conflict.value || sessionChanged.value) throw new Error('请先解决保存冲突或重新载入账户')
+    const guest = await readGuestWorkspace()
+    if (await importedGuestRevision(currentUser.value.id) === (guest.revision ?? 0)) { guestAvailable.value = false; flash('当前版本的本机数据已导入'); return }
+    const imported = parseImport(guest)
+    workspace.value.collections.push(...imported.collections); workspace.value.environments.push(...imported.environments)
+    if (await persist()) { guestAvailable.value = false; try { await markGuestImported(currentUser.value.id, guest.revision ?? 0) } catch { /* The account copy is already saved; the banner may reappear. */ } flash('本机集合和环境已复制到账户，原本机数据保留') }
+  } catch (ex) { saveError.value = ex instanceof Error ? ex.message : '导入失败' }
+  finally { guestImportBusy.value = false }
+}
+async function loadShares(append = false) {
+  const generation = ++sharesGeneration; sharesBusy.value = true; sharesError.value = ''
+  try {
+    const query = new URLSearchParams({ query: shareQuery.value, kind: shareKind.value, mine: String(shareMine.value && !!currentUser.value), offset: String(append ? shares.value.length : 0), limit: '30' })
+    const result = await fetch(`/api/shares?${query}`); const page = await result.json(); if (!result.ok) throw new Error(page.error ?? '加载分享失败')
+    if (generation !== sharesGeneration) return
+    shares.value = append ? [...shares.value, ...page.items] : page.items; shareTotal.value = page.total
+  } catch (ex) { sharesError.value = ex instanceof Error ? ex.message : '加载分享失败' }
+  finally { if (generation === sharesGeneration) sharesBusy.value = false }
+}
+function openShares() { sidebarTab.value = 'shares'; void loadShares() }
+async function viewShare(item: Pick<ShareSummary, 'id'>) {
+  const generation = ++detailGeneration
+  sharesError.value = ''
+  try {
+    const result = await fetch(`/api/shares/${item.id}`); const data = await result.json(); if (!result.ok) throw new Error(data.error ?? '分享已撤回')
+    if (generation !== detailGeneration) return
+    shareDetail.value = data; shareDestination.value = selectedCollectionId.value
+  } catch (ex) { sharesError.value = ex instanceof Error ? ex.message : '加载失败' }
+}
+async function copyShareLink() {
+  if (!shareDetail.value) return
+  const url = `${window.location.origin}${window.location.pathname}?share=${encodeURIComponent(shareDetail.value.id)}`
+  try { await navigator.clipboard.writeText(url); flash('分享链接已复制') }
+  catch { sharesError.value = `请手动复制分享链接：${url}` }
+}
+async function copyShare() {
+  if (!shareDetail.value || saving.value) return
+  try {
+    if (conflict.value || sessionChanged.value || (workspaceDirty.value && saveError.value)) throw new Error('请先处理工作区的保存问题，已复制的内容会保留')
+    const imported = parseImport({ collections: [shareDetail.value.collection], environments: [] }).collections[0]
+    imported.name = shareDetail.value.title
+    if (shareDetail.value.kind === 'request' && imported.requests[0]) imported.requests[0].name = shareDetail.value.title
+    const destination = shareDetail.value.kind === 'request' ? workspace.value.collections.find(x => x.id === shareDestination.value) : undefined
+    if (destination) destination.requests.push(...imported.requests.map(x => ({ ...x, folderId: '' })))
+    else workspace.value.collections.push(imported)
+    if (await persist()) {
+      const collection = destination ?? imported; const request = destination ? destination.requests[destination.requests.length - 1] : collection.requests[0]
+      sidebarTab.value = 'collections'; if (request) openRequest(collection, request)
+      flash(currentUser.value ? '已保存到我的账户，可独立修改' : '已保存到本机浏览器，可独立修改')
+    }
+  } catch (ex) { sharesError.value = ex instanceof Error ? ex.message : '保存失败' }
+}
+async function withdrawShare(item: ShareSummary) {
+  if (!confirm('撤回后其他人不能再浏览此分享，已保存的副本不受影响。继续？')) return
+  try {
+  const result = await accountFetch(`/api/shares/${item.id}`, { method: 'DELETE' })
+  if (!result.ok) { sharesError.value = '撤回失败，只有作者本人可以操作'; return }
+  if (shareDetail.value?.id === item.id) shareDetail.value = null
+  await loadShares(); flash('分享已撤回')
+  } catch (ex) { sharesError.value = ex instanceof Error ? ex.message : '撤回失败' }
+}
+async function prepareShare(kind: 'request' | 'collection', collectionId = selectedCollectionId.value) {
+  if (!currentUser.value) { openAuth(); authError.value = '登录后可发布分享；游客可浏览并保存别人的分享'; return }
+  shareError.value = ''; shareBusy.value = true
+  try {
+    if (kind === 'request') { await saveRequest(); if (saveError.value) throw new Error(saveError.value); collectionId = selectedCollectionId.value }
+    const collection = workspace.value.collections.find(x => x.id === collectionId); if (!collection) throw new Error('请先保存集合')
+    shareDraft.value = { kind, collectionId, requestId: kind === 'request' ? draft.value.id : '', title: kind === 'request' ? draft.value.name : collection.name, description: '', revision: -1 }
+    const result = await accountFetch('/api/shares/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(shareDraft.value) })
+    const data = await result.json(); if (!result.ok) throw new Error(data.error ?? '预览失败')
+    sharePreview.value = data.collection; shareDraft.value.revision = data.revision; showShare.value = true
+  } catch (ex) { saveError.value = ex instanceof Error ? ex.message : '分享失败' }
+  finally { shareBusy.value = false }
+}
+async function publishShare() {
+  if (shareBusy.value) return
+  shareBusy.value = true; shareError.value = ''
+  try {
+    const result = await accountFetch('/api/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(shareDraft.value) })
+    const data = await result.json(); if (!result.ok) throw new Error(data.error ?? '分享失败')
+    showShare.value = false; shareDetail.value = data; sidebarTab.value = 'shares'; await loadShares(); flash('已发布到分享大厅')
+  } catch (ex) { shareError.value = ex instanceof Error ? ex.message : '分享失败' }
+  finally { shareBusy.value = false }
 }
 function openRequest(collection: Collection, request: RequestItem) {
   const existing = editorTabs.value.find(x => x.requestId === request.id && x.originalCollectionId === collection.id)
@@ -299,18 +500,21 @@ async function sendRequest() {
   error.value = ''; response.value = null; busy.value = true; requestController = new AbortController(); stashEditor()
   const tab = editorTabs.value.find(x => x.id === activeEditorId.value)!
   const controller = requestController
+  const generation = storageGeneration; const owner = storageOwner()
   try {
     const spec = { ...copy(draft.value), files: draft.value.bodyType === 'multipart' ? files.value : [] }
-    const result = await fetch('/api/execute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ request: spec, variables: variableMap.value, effectiveAuth: effectiveAuth.value, collectionId: selectedCollectionId.value }) })
+    const result = await accountFetch('/api/execute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+      body: JSON.stringify({ request: spec, variables: variableMap.value, effectiveAuth: effectiveAuth.value, collectionId: selectedCollectionId.value }) }, owner)
     const data = await result.json()
     if (!result.ok) throw new Error(data.error ?? '请求发送失败')
+    if (generation !== storageGeneration) return
+    if (!currentUser.value && data.history) await addGuestHistory(data.history)
     tab.response = data as ExecuteResult
     if (activeEditorId.value === tab.id) response.value = tab.response
     try { await loadHistory() } catch { flash('响应已收到，历史记录暂未刷新') }
   } catch (ex) {
     tab.error = ex instanceof DOMException && ex.name === 'AbortError' ? '请求已取消' : ex instanceof Error ? ex.message : '请求发送失败'
-    if (activeEditorId.value === tab.id) error.value = tab.error
+    if (generation === storageGeneration && activeEditorId.value === tab.id) error.value = tab.error
   } finally {
     tab.busy = false; tab.controller = null
     if (activeEditorId.value === tab.id) { busy.value = false; requestController = null }
@@ -365,22 +569,27 @@ function addEnvironment() {
 }
 
 async function exportWorkspace() {
+  const generation = storageGeneration; const owner = storageOwner(); const account = currentUser.value
+  stashEditor(); const snapshot = copy(workspace.value)
+  const drafts = editorTabs.value.filter(tabDirty).map(x => ({ request: { ...copy(x.draft), auth: copy(resolveAuth(x.draft, workspace.value.collections.find(c => c.id === x.collectionId))) }, collectionId: x.collectionId }))
   try {
-    const history: History[] = []
-    for (let offset = 0; ; offset += 100) {
-      const result = await fetch(`/api/history?offset=${offset}&limit=100`); if (!result.ok) throw new Error('导出历史失败，请重试')
+    const history: History[] = account ? [] : await readGuestHistory()
+    for (let offset = 0; account; offset += 100) {
+      const result = await accountFetch(`/api/history?offset=${offset}&limit=100`, {}, owner); if (!result.ok) { history.push(...snapshot.history); flash('登录已变化，已导出当前缓存与草稿'); break }
       const page = await result.json(); history.push(...page.items); if (offset + page.items.length >= page.total || !page.items.length) break
     }
-    stashEditor()
-    downloadBlob(new Blob([JSON.stringify({ ...workspace.value, history, schemaVersion: 2, unsavedTabs: editorTabs.value.filter(tabDirty).map(x => ({ request: { ...x.draft, auth: resolveAuth(x.draft, workspace.value.collections.find(c => c.id === x.collectionId)) }, collectionId: x.collectionId })) }, null, 2)], { type: 'application/json' }), 'webpostman-workspace.json')
+    if (generation !== storageGeneration || owner !== storageOwner()) throw new Error('账户已切换，请在当前账户重新导出')
+    downloadBlob(new Blob([JSON.stringify({ ...snapshot, history, schemaVersion: 2, unsavedTabs: drafts }, null, 2)], { type: 'application/json' }), 'webpostman-workspace.json')
   } catch (ex) { saveError.value = ex instanceof Error ? ex.message : '导出失败' }
 }
 async function importFile(event: Event) {
   const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file) return
+  const generation = storageGeneration
   try {
     if (saving.value) throw new Error('请等待当前保存完成后再导入')
     if (file.size > 20 * 1024 * 1024) throw new Error('导入文件不能超过 20 MB')
     const imported = parseImport(JSON.parse(await file.text()))
+    if (generation !== storageGeneration) throw new Error('账户已切换，请在当前工作区重新导入')
     if (workspace.value.collections.length + imported.collections.length > 500 || workspace.value.environments.length + imported.environments.length > 100) throw new Error('导入后超过工作区数量限制')
     workspace.value.collections.push(...imported.collections); workspace.value.environments.push(...imported.environments)
     if (await persist()) { flash('导入完成'); if (imported.warnings.length) saveError.value = imported.warnings.join('；') }
@@ -392,9 +601,17 @@ function beforeUnload(event: BeforeUnloadEvent) {
   if (workspaceDirty.value || saving.value || editorTabs.value.some(tabDirty)) { event.preventDefault(); event.returnValue = '' }
 }
 function keyboard(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!showEnvironments.value) void saveRequest(); else void persist() }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault()
+    if (showAuth.value || showShare.value || sidebarTab.value === 'shares') return
+    if (!showEnvironments.value) void saveRequest(); else void persist()
+  }
 }
-onMounted(async () => { window.addEventListener('keydown', keyboard); window.addEventListener('beforeunload', beforeUnload); await reloadWorkspace() })
+onMounted(async () => {
+  window.addEventListener('keydown', keyboard); window.addEventListener('beforeunload', beforeUnload); await reloadWorkspace()
+  const shareId = new URLSearchParams(window.location.search).get('share')
+  if (shareId) { sidebarTab.value = 'shares'; await loadShares(); await viewShare({ id: shareId }) }
+})
 onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.removeEventListener('beforeunload', beforeUnload); clearTimeout(noticeTimer); requestController?.abort(); for (const tab of editorTabs.value) tab.controller?.abort() })
 </script>
 
@@ -403,19 +620,22 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
     <header class="topbar">
       <div class="brand"><button class="sidebar-toggle" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="sidebarCollapsed = !sidebarCollapsed">☰</button><div class="brand-mark">◆</div><span>WebPostman</span><small>API WORKSPACE</small></div>
       <div class="topbar-right">
-        <span class="local-badge"><span class="live-dot"></span> 本地工作区</span><button class="top-link" @click="reloadWorkspace">重新载入</button>
+        <span class="local-badge"><span class="live-dot"></span>{{ currentUser ? '账户存储' : '游客 · 本机存储' }}</span><button class="account-button" @click="openAuth" :disabled="workspaceLoading" :title="currentUser ? '切换账户' : '登录后保存到个人账户'">{{ currentUser?.email ?? '登录 / 注册' }}</button><button v-if="currentUser" class="top-link" @click="logout">退出</button><button class="top-link" @click="reloadWorkspace">重新载入</button>
         <button class="top-link" @click="showEnvironments = true">环境变量</button>
         <button class="top-link" @click="exportWorkspace">导出</button>
         <label class="top-link upload-label">导入<input type="file" accept=".json,application/json" hidden @change="importFile" /></label>
       </div>
     </header>
 
+    <div v-if="currentUser && guestAvailable && !workspaceLoading" class="storage-notice"><span>本机浏览器中还有游客数据，是否复制到当前账户？原本机数据将保留。</span><button @click="importGuestData" :disabled="saving || guestImportBusy">导入本机数据</button><button @click="guestAvailable = false" aria-label="暂不导入">稍后</button></div>
+    <div v-if="!currentUser" class="guest-notice">游客请求仅保存在此浏览器，清除浏览器数据后会丢失。登录后可保存到个人账户，或随时导出备份。</div>
     <div v-if="saveError" class="workspace-alert" role="alert"><span>{{ saveError }}</span><button @click="persist" :disabled="saving || conflict">重试保存</button><button @click="exportWorkspace">导出备份</button><button v-if="conflict" @click="reloadWorkspace">载入最新工作区</button><button v-else @click="saveError = ''" aria-label="关闭提示">×</button></div>
-    <div class="workspace-layout" :class="{ 'sidebar-is-collapsed': sidebarCollapsed }">
+    <div v-if="workspaceLoading" class="storage-notice" role="status">正在载入工作区…</div>
+    <div class="workspace-layout" :inert="workspaceLoading" :class="{ 'sidebar-is-collapsed': sidebarCollapsed }">
       <aside class="sidebar">
         <div class="sidebar-head"><span class="eyebrow">WORKSPACE</span><button class="icon-button" title="新建集合" aria-label="新建集合" @click="createCollection"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" /></svg></button></div>
-        <div class="sidebar-tabs"><button :class="{ active: sidebarTab === 'collections' }" @click="sidebarTab = 'collections'">集合</button><button :class="{ active: sidebarTab === 'history' }" @click="sidebarTab = 'history'">历史</button></div>
-        <div class="sidebar-search"><input v-model="search" aria-label="搜索集合或请求" placeholder="搜索名称、URL、方法…" /></div>
+        <div class="sidebar-tabs"><button :class="{ active: sidebarTab === 'collections' }" @click="sidebarTab = 'collections'">集合</button><button :class="{ active: sidebarTab === 'history' }" @click="sidebarTab = 'history'">历史</button><button :class="{ active: sidebarTab === 'shares' }" @click="openShares">分享</button></div>
+        <div v-if="sidebarTab !== 'shares'" class="sidebar-search"><input v-model="search" aria-label="搜索集合或请求" placeholder="搜索名称、URL、方法…" /></div>
         <div v-if="sidebarTab === 'collections'" class="sidebar-scroll">
           <div v-if="!workspace.collections.length" class="empty-sidebar">还没有集合。<button @click="createCollection">创建第一个集合 →</button></div>
           <div v-for="collection in workspace.collections.filter(matchesCollection)" :key="collection.id" class="collection-block">
@@ -431,19 +651,36 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
             </div>
             <button v-for="request in shownRequests(collection)" :key="request.id" class="request-line" :class="{ active: selectedRequestId === request.id }" @click="openRequest(collection, request)"><span :class="['method-mini', methodClass(request.method)]">{{ request.method }}</span><span class="truncate">{{ request.name }}</span></button>
             </template>
-            <div v-if="selectedCollectionId === collection.id" class="collection-actions"><button @click="createFolder(collection)">＋ 文件夹</button><button @click="deleteCollection(collection)">删除集合</button></div>
+            <div v-if="selectedCollectionId === collection.id" class="collection-actions"><button @click="createFolder(collection)">＋ 文件夹</button><button @click="prepareShare('collection', collection.id)" :disabled="saving || shareBusy">分享集合</button><button @click="deleteCollection(collection)">删除集合</button></div>
             <div v-if="folderCreationCollectionId === collection.id" class="folder-create"><input v-model="newFolderName" aria-label="文件夹名称" placeholder="文件夹名称" @keydown.enter="commitFolder(collection)" /><button @click="commitFolder(collection)">保存</button><button @click="folderCreationCollectionId = ''">取消</button></div>
           </div>
         </div>
-        <div v-else class="sidebar-scroll history-list"><div v-if="!workspace.history.length" class="empty-sidebar">发送请求后会显示在这里。</div><button v-for="item in workspace.history.filter(x => !search || `${x.request?.name ?? ''} ${x.url} ${x.method}`.toLowerCase().includes(search.toLowerCase()))" :key="item.id" class="history-line" :title="`${new Date(item.at).toLocaleString()} · ${item.status}`" @click="openHistory(item)"><span :class="['method-mini', methodClass(item.method)]">{{ item.method }}</span><span class="truncate">{{ item.request?.name || item.url }}</span><small>{{ item.status }}</small></button><button v-if="workspace.history.length < historyTotal" class="add-row" @click="loadHistory(true)">加载更多历史</button></div>
-        <div class="sidebar-footer"><span class="footer-dot"></span> SQLite 本地保存 <span class="save-state">{{ saving ? '保存中…' : saveError ? '保存需处理' : workspaceDirty || dirty ? '有未保存修改' : '已保存' }}</span></div>
+        <div v-else-if="sidebarTab === 'history'" class="sidebar-scroll history-list"><div v-if="!workspace.history.length" class="empty-sidebar">发送请求后会显示在这里。</div><button v-for="item in workspace.history.filter(x => !search || `${x.request?.name ?? ''} ${x.url} ${x.method}`.toLowerCase().includes(search.toLowerCase()))" :key="item.id" class="history-line" :title="`${new Date(item.at).toLocaleString()} · ${item.status}`" @click="openHistory(item)"><span :class="['method-mini', methodClass(item.method)]">{{ item.method }}</span><span class="truncate">{{ item.request?.name || item.url }}</span><small>{{ item.status }}</small></button><button v-if="workspace.history.length < historyTotal" class="add-row" @click="loadHistory(true)">加载更多历史</button></div>
+        <div v-if="sidebarTab === 'shares'" class="share-sidebar">
+          <form class="share-filters" @submit.prevent="loadShares()"><input v-model="shareQuery" aria-label="搜索分享" placeholder="搜索分享标题、描述…" maxlength="200" /><div><select v-model="shareKind" aria-label="分享类型" @change="loadShares()"><option value="">全部类型</option><option value="request">请求</option><option value="collection">集合</option></select><button type="submit">搜索</button></div><label v-if="currentUser"><input v-model="shareMine" type="checkbox" @change="loadShares()" />只看我的分享</label></form>
+          <div v-if="sharesError" class="share-inline-error" role="alert">{{ sharesError }}</div>
+          <p v-if="!shares.length && !sharesBusy" class="empty-sidebar">还没有匹配的分享。登录后可分享请求或集合。</p>
+          <div class="share-list"><button v-for="item in shares" :key="item.id" class="share-list-item" :class="{ selected: shareDetail?.id === item.id }" @click="viewShare(item)"><span class="share-kind">{{ item.kind === 'request' ? '请求' : '集合' }} · {{ item.requestCount }} 个请求</span><strong>{{ item.title }}</strong><small>{{ item.author }}</small></button><button v-if="shares.length < shareTotal" class="add-row" @click="loadShares(true)" :disabled="sharesBusy">加载更多分享</button><p v-if="sharesBusy" class="muted">正在加载…</p></div>
+        </div>
+        <div class="sidebar-footer"><span class="footer-dot"></span> {{ currentUser ? '个人账户保存' : '浏览器 IndexedDB' }} <span class="save-state">{{ saving ? '保存中…' : saveError ? '保存需处理' : workspaceDirty || dirty ? '有未保存修改' : '已保存' }}</span></div>
       </aside>
 
-      <main class="main-panel">
+      <main v-if="sidebarTab === 'shares'" class="main-panel share-panel">
+        <div class="share-panel-heading"><div><span class="eyebrow">COMMUNITY</span><h1>分享大厅</h1><p>登录或游客均可浏览，保存副本后可以独立修改。</p></div><button class="outline-button" @click="loadShares()">刷新分享</button></div>
+        <div v-if="shareDetail" class="shared-detail">
+          <div class="share-title-row"><div><span class="share-kind">{{ shareDetail.kind === 'request' ? '请求分享' : '集合分享' }}</span><h2>{{ shareDetail.title }}</h2><p>{{ shareDetail.author }} · {{ new Date(shareDetail.createdAt).toLocaleString() }}</p></div><div class="share-title-actions"><button class="outline-button" @click="copyShareLink">复制分享链接</button><button v-if="shareDetail.ownerId === currentUser?.id" class="subtle-button" @click="withdrawShare(shareDetail)">撤回分享</button></div></div>
+          <p v-if="shareDetail.description" class="share-description">{{ shareDetail.description }}</p>
+          <div class="share-copy-bar"><label v-if="shareDetail.kind === 'request'">保存到<select v-model="shareDestination" aria-label="分享保存目标"><option value="">新建集合</option><option v-for="collection in workspace.collections" :key="collection.id" :value="collection.id">{{ collection.name }}</option></select></label><span v-else>将创建独立的集合副本</span><button class="send-button" @click="copyShare" :disabled="saving">{{ saving ? '保存中…' : currentUser ? '存到我的集合' : '存到本机集合' }}</button></div>
+          <h3>分享的请求（{{ shareDetail.collection.requests.length }}）</h3><div class="shared-request" v-for="request in shareDetail.collection.requests" :key="request.id"><span :class="['method-mini', methodClass(request.method)]">{{ request.method }}</span><strong>{{ request.name }}</strong><code>{{ request.url }}</code></div>
+          <details class="share-source"><summary>查看完整内容（敏感凭据需自行配置）</summary><pre>{{ JSON.stringify(shareDetail.collection, null, 2) }}</pre></details>
+        </div>
+        <div v-else class="share-empty"><strong>发现可复用的请求与集合</strong><p>从左侧选择分享查看详情，一键存到自己的存储中。</p><button v-if="!currentUser" class="outline-button" @click="openAuth">登录，发布我的分享</button></div>
+      </main>
+      <main v-else class="main-panel">
         <div class="request-tabs" role="tablist" aria-label="请求标签"><div v-for="tab in editorTabs" :key="tab.id" class="request-tab" :class="{ active: activeEditorId === tab.id }"><button role="tab" :aria-selected="activeEditorId === tab.id" @click="activateEditor(tab)">{{ tab.busy ? '◌ ' : '' }}{{ tab.draft.name }}{{ tabDirty(tab) ? ' •' : '' }}</button><button :aria-label="`关闭标签 ${tab.draft.name}`" @click="closeEditor(tab)">×</button></div><button class="tiny-button" aria-label="新建请求标签" @click="createRequest()">＋</button></div>
         <div class="editor-header">
           <div class="editor-identity"><input v-model="draft.name" class="request-title" aria-label="请求名称" /><div class="category-picker"><span>保存到</span><select v-model="selectedCollectionId" aria-label="选择集合" @change="onCollectionChanged"><option value="">新建集合</option><option v-for="collection in workspace.collections" :key="collection.id" :value="collection.id">{{ collection.name }}</option></select><select v-if="selectedCollection" v-model="draft.folderId" aria-label="选择文件夹"><option value="">集合根目录</option><option v-for="folder in selectedCollection.folders" :key="folder.id" :value="folder.id">{{ folderPath(selectedCollection, folder) }}</option></select></div></div>
-          <div class="header-actions"><span v-if="dirty" class="dirty-badge">未保存</span><button class="subtle-button" @click="duplicateRequest">复制请求</button><button class="subtle-button" @click="copyCurl" title="复制为 Bash cURL，包含当前授权信息">复制 cURL</button><button class="subtle-button" @click="deleteRequest" :disabled="!selectedRequestId">删除</button><button class="outline-button" @click="saveRequest" :disabled="saving" title="Ctrl+S / ⌘S">保存请求</button></div>
+          <div class="header-actions"><span v-if="dirty" class="dirty-badge">未保存</span><button class="subtle-button" @click="duplicateRequest">复制请求</button><button class="subtle-button" @click="prepareShare('request')" :disabled="saving || shareBusy">分享请求</button><button class="subtle-button" @click="copyCurl" title="复制为 Bash cURL，包含当前授权信息">复制 cURL</button><button class="subtle-button" @click="deleteRequest" :disabled="!selectedRequestId">删除</button><button class="outline-button" @click="saveRequest" :disabled="saving" title="Ctrl+S / ⌘S">保存请求</button></div>
         </div>
         <section class="composer">
           <div class="section-label"><span class="section-index">01</span> REQUEST BUILDER <span class="section-line"></span><span class="muted">配置并发送 HTTP 请求</span></div>
@@ -497,6 +734,8 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
       </main>
     </div>
 
+    <div v-if="showAuth" class="modal-backdrop account-backdrop" @click.self="!authBusy && (showAuth = false)"><form class="account-modal" @submit.prevent="submitAuth" role="dialog" aria-modal="true" :aria-label="authMode === 'login' ? '登录账户' : '注册账户'"><div class="modal-head"><h2>{{ authMode === 'login' ? '登录个人工作区' : '创建 WebPostman 账户' }}</h2><button type="button" class="close-button" @click="showAuth = false" :disabled="authBusy" aria-label="关闭登录窗口">×</button></div><p>游客数据只在本机。登录后可以保存到个人账户、发布分享。</p><div class="account-mode"><button type="button" :class="{ chosen: authMode === 'login' }" @click="authMode = 'login'; authError = ''">登录</button><button type="button" :class="{ chosen: authMode === 'register' }" @click="authMode = 'register'; authError = ''">注册</button></div><label>邮箱<input v-model="authEmail" type="email" autocomplete="username" required maxlength="254" aria-label="账户邮箱" /></label><label>密码<input v-model="authPassword" type="password" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" required minlength="8" maxlength="128" aria-label="账户密码" placeholder="至少 8 个字符" /></label><label v-if="authMode === 'register'">确认密码<input v-model="authConfirmPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="128" aria-label="确认密码" /></label><p v-if="authError" class="error-banner" role="alert">{{ authError }}</p><button class="send-button account-submit" type="submit" :disabled="authBusy">{{ authBusy ? '正在处理…' : authMode === 'login' ? '登录' : '注册并登录' }}</button><small>切换前会将未保存草稿留在原存储中，本机数据不会自动上传。</small></form></div>
+    <div v-if="showShare" class="modal-backdrop account-backdrop" @click.self="!shareBusy && (showShare = false)"><div class="share-modal" role="dialog" aria-modal="true" aria-label="发布分享"><div class="modal-head"><h2>发布{{ shareDraft.kind === 'request' ? '请求' : '集合' }}分享</h2><button class="close-button" @click="showShare = false" :disabled="shareBusy" aria-label="关闭分享预览">×</button></div><p>发布后，同一服务上的所有人都能查看并复制。常见认证信息、Cookie、文件内容已移除，非 JSON 原始正文默认不公开；请继续检查 URL 和正文是否含有私密内容。</p><label>分享标题<input v-model="shareDraft.title" maxlength="100" aria-label="分享标题" /></label><label>描述（选填）<textarea v-model="shareDraft.description" maxlength="1000" aria-label="分享描述" /></label><details open><summary>将公开的内容预览</summary><pre>{{ JSON.stringify(sharePreview, null, 2) }}</pre></details><p v-if="shareError" class="error-banner" role="alert">{{ shareError }}</p><div class="modal-actions"><button class="outline-button" @click="showShare = false" :disabled="shareBusy">取消</button><button class="send-button" @click="publishShare" :disabled="shareBusy || !shareDraft.title.trim()">{{ shareBusy ? '发布中…' : '确认公开分享' }}</button></div></div></div>
     <div v-if="showEnvironments" class="modal-backdrop" @click.self="showEnvironments = false"><div class="env-modal"><div class="modal-head"><div><span class="eyebrow">WORKSPACE SETTINGS</span><h2>环境变量</h2></div><button class="close-button" @click="showEnvironments = false">×</button></div><p class="modal-description">在 URL、请求头、正文及验证信息中使用 <code v-pre>{{变量名}}</code>。</p><div class="env-toolbar"><select v-model="activeEnvironmentId"><option value="">不使用环境</option><option v-for="environment in workspace.environments" :key="environment.id" :value="environment.id">{{ environment.name }}</option></select><button class="outline-button" @click="addEnvironment">＋ 新建环境</button></div><template v-if="activeEnvironment"><div class="form-field env-name"><label>环境名称</label><input v-model="activeEnvironment.name" /></div><div class="kv-head"><span>启用</span><span>KEY</span><span>VALUE</span><span></span></div><div v-for="row in activeEnvironment.variables" :key="row.id" class="kv-row"><input v-model="row.enabled" type="checkbox" /><input v-model="row.key" placeholder="base_url" /><input v-model="row.value" type="password" placeholder="变量值" /><button class="remove-row" @click="activeEnvironment!.variables = activeEnvironment!.variables.filter(x => x.id !== row.id)">×</button></div><button class="add-row" @click="activeEnvironment!.variables.push(newRow())">＋ 添加变量</button></template><div class="modal-actions"><button v-if="activeEnvironment" class="subtle-button" @click="workspace.environments = workspace.environments.filter(x => x.id !== activeEnvironmentId); activeEnvironmentId = ''; persist()">删除环境</button><button class="send-button" @click="saveEnvironments" :disabled="saving">保存并关闭</button></div></div></div>
     <div v-if="notice" class="toast">✓ {{ notice }}</div>
   </div>

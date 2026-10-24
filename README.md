@@ -2,11 +2,28 @@
 
 本地运行的 API 请求工作台。后端使用 .NET 8，页面使用 Vue 3，数据保存在本地 SQLite。
 
+## 账户、本机存储与分享
+
+| 使用方式 | 保存位置 | 分享能力 |
+| --- | --- | --- |
+| 未登录 | 当前浏览器的 IndexedDB；请求、环境和历史不在服务端持久化 | 浏览公开分享，复制到本机集合 |
+| 已登录 | 服务端当前用户独立的工作区 | 发布请求/集合分享，复制到个人集合，撤回自己的分享 |
+
+点击右上角“登录 / 注册”，填写邮箱、密码及确认密码即可注册并登录；密码为 8～128 个字符。邮箱用于登录，本期不发送验证邮件。密码使用 ASP.NET Core Identity 的 PasswordHasher 哈希保存，登录会话保留 7 天，退出时撤销该会话；会话凭据使用 HttpOnly、SameSite=Strict Cookie，HTTPS 下启用 Secure。
+
+游客刷新页面后仍可继续使用本机工作区；清除浏览器数据会删除这些内容，建议使用“导出”备份。登录和退出会切换存储，未保存的草稿先保留在原存储中。本机数据不会自动上传，登录后可点击“导入本机数据”复制集合和环境到个人账户；同一版本不会反复导入，原本机数据保留。
+
+左侧“分享”标签提供搜索、请求/集合类型筛选和“只看我的分享”，详情中可复制直达链接，打开链接可直接浏览该分享。发布前展示内容预览，常见凭据和文件内容会移除，非 JSON 原始正文默认留空；仍需检查预览中的私密值。公开内容是已保存版本的独立快照，后续修改原请求不会自动更新分享。访客可点击“存到本机集合”，登录后可点击“存到我的集合”；单个请求可以选择已有集合，集合会复制为独立集合。撤回分享不会删除其他人已经保存的副本。
+
+所有分享仅在同一个服务实例内可见，不会自动同步到其他独立安装。多人使用时部署到同一服务地址；默认仍只监听本机。远程访问应通过 HTTPS 反向代理，并限制请求代理的网络访问范围；该工具会代用户访问所填写的 HTTP 地址，适合在可信环境中使用。默认信任本机反向代理的转发协议信息，其他代理需要按部署环境配置可信代理。
+
+账户和分享位于 `App_Data/accounts.db`，个人工作区位于 `App_Data/users/<用户ID>/workspace.db`。升级前的匿名服务端 `workspace.db` 保留原样，不会分配给任意注册用户；请先在旧版导出，再登录目标账户导入。备份服务端时应备份整个 `App_Data`。
+
 ## 下载即用（Windows / Linux x64）
 
 从 [Releases](https://github.com/fzj929/WebPostman/releases) 下载 `WebPostman-v版本号-win-x64.zip`，完整解压到可写目录后，双击 `Start-WebPostman.cmd`，访问 `http://127.0.0.1:5078`。便携包已包含前端页面及 .NET 运行时，无需安装 Node.js、SDK 或 .NET。保持命令窗口打开，按 Ctrl+C 停止。
 
-工作区保存在解压目录的 `App_Data/workspace.db`。更新前停止程序并备份该目录，解压新版本时保留 `App_Data`。Release 同时提供 `SHA256SUMS.txt` 用于校验下载包。需要后台运行时，可使用包内的 `scripts/install-service.ps1` 安装 Windows 服务。
+登录账户与分享数据保存在解压目录的 `App_Data`（含 `accounts.db` 和 `users` 目录）；游客数据在浏览器中。更新前停止程序并备份整个 `App_Data`，游客可通过导出备份。Release 同时提供 `SHA256SUMS.txt` 用于校验下载包。需要后台运行时，可使用包内的 `scripts/install-service.ps1` 安装 Windows 服务。
 
 Linux x64 下载 `WebPostman-v版本号-linux-x64.tar.gz`，解压后运行：
 
@@ -48,7 +65,7 @@ cd ..
 dotnet run --project WebPostman.Api
 ```
 
-浏览器打开 `http://127.0.0.1:5078`。应用只监听本机地址。数据文件在 `WebPostman.Api/App_Data/workspace.db`。
+浏览器打开 `http://127.0.0.1:5078`。应用只监听本机地址。账户与分享数据在 `WebPostman.Api/App_Data`，游客工作区在浏览器中。
 
 ## 系统服务
 
@@ -120,8 +137,8 @@ bash scripts/manage-service.sh run
 - 集合与请求搜索、集合/文件夹折叠、Postman 嵌套文件夹与授权继承；Multipart 导入保留文本和文件字段，文件内容需要重新选择。
 - 每个请求可配置 1～600 秒超时和重定向开关；诊断区分原始与最终 URL，跨来源重定向不转发敏感请求头。敏感诊断默认隐藏，可按请求显式显示。
 - 响应正文搜索高亮、文本/二进制下载；超过 2 MB 的响应会标明截断，下载内容也仅包含已读取的部分。
-- 集合、环境和历史分表存储，仅提交变更实体；保存采用版本检测，旧页面无法覆盖新修改。冲突后可导出备份（含未保存标签草稿）再重新载入。
-- 历史记录独立分页，保留最近 1000 条。导出时包含全部保留历史；导入集合不会改写已有历史。
+- 账户工作区的集合、环境和历史分表存储，仅提交变更实体；保存采用版本检测，旧页面无法覆盖新修改。冲突后可导出备份（含未保存标签草稿）再重新载入。
+- 每个账户或本机工作区保留最近 1000 条历史，账户历史通过独立接口分页查询。导出时包含全部保留历史；导入集合不会改写已有历史。
 
 - HTTP 请求编辑与发送，支持参数、请求头、请求 Cookie、JSON、文本、表单和 Multipart 文件。
 - 可按请求启用不安全 SSL 连接，用于访问自签名或证书不受信任的 HTTPS 服务；该选项会随请求及历史快照保存。
@@ -131,20 +148,20 @@ bash scripts/manage-service.sh run
 - 自动添加 `Accept`、`User-Agent`、`Accept-Encoding` 请求头，自定义同名头可以覆盖。
 - 环境变量 `{{变量名}}`、本地工作区导入导出，以及 Postman Collection v2.1 的基础导入。
 
-认证值及历史快照以明文保存在本机 SQLite 工作区及导出的 JSON 中。请妥善保管这些文件；不要将本应用直接作为公网服务部署。
+请求凭据及历史快照以明文保存在相应的浏览器工作区、服务端账户 SQLite 工作区或导出的 JSON 中；登录密码仅存哈希。请妥善保管这些文件；不要将本应用直接作为公网服务部署。
 
 测试时可通过环境变量 `WebPostman__ListenUrl` 和 `WebPostman__DataDirectory` 指定独立端口与数据目录，避免更改已有工作区。
 
 ### 数据升级与验证
 
-新版首次打开旧数据库时，在事务中将集合、环境与历史迁移到独立表，原始 `workspace` JSON 行保留为迁移快照。升级前请备份 `App_Data`；降级旧版本不能读取新版表中的后续修改。新旧版本应分别使用自己的数据目录。
+个人工作区存储兼容旧数据库的分表迁移，迁移在事务内完成并保留原始 `workspace` JSON 行。旧匿名服务器数据库不会自动分配给注册用户，请使用旧版导出后导入到目标账户。升级前请备份 `App_Data`；降级旧版本不能读取新版表中的后续修改。新旧版本应分别使用自己的数据目录。
 
 安装前端依赖后，可在仓库根目录执行：
 
 ```powershell
 npm --prefix WebPostman.Web run build
 dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
-node --test tests/frontend.test.mjs tests/api.test.mjs
+node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs
 ```
 
 测试使用独立端口和临时 SQLite 数据库，需要 Node.js 22、.NET 8 SDK 和 Python 3（生成旧库迁移测试数据）。`Regression checks` 在提交到 main 或创建 PR 时自动在 Windows / Linux 上执行。发布工作流继续对两个平台的便携包执行启动检查。

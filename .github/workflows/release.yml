@@ -83,7 +83,8 @@ jobs:
           4. Keep the console open; press Ctrl+C to stop.
 
           Node.js and .NET do not need to be installed.
-          Workspace data is stored in App_Data/workspace.db. Back it up before updating.
+          Server data is stored in App_Data. Back up the entire directory before updating.
+          Account-enabled versions keep anonymous workspaces only in the browser.
           To update, stop the app and extract the new version without deleting App_Data.
 
           Optional Windows service (administrator PowerShell):
@@ -108,9 +109,17 @@ jobs:
               Start-Sleep -Seconds 1
             }
             if (-not $ready) { throw 'Packaged frontend did not become ready.' }
-            $workspace = Invoke-RestMethod http://127.0.0.1:15078/api/workspace -TimeoutSec 5
-            if ($null -eq $workspace.collections) { throw 'Workspace API response is invalid.' }
-            if (-not (Test-Path "$env:WebPostman__DataDirectory/workspace.db")) { throw 'SQLite database was not created.' }
+            if (Test-Path WebPostman.Api/Accounts.cs) {
+              $session = Invoke-RestMethod http://127.0.0.1:15078/api/auth/me -TimeoutSec 5
+              if (-not ($session.PSObject.Properties.Name -contains 'user')) { throw 'Session API response is invalid.' }
+              $private = Invoke-WebRequest http://127.0.0.1:15078/api/workspace -SkipHttpErrorCheck -TimeoutSec 5
+              if ($private.StatusCode -ne 401) { throw 'Anonymous workspace access must be rejected.' }
+              if (-not (Test-Path "$env:WebPostman__DataDirectory/accounts.db")) { throw 'Accounts database was not created.' }
+            } else {
+              $workspace = Invoke-RestMethod http://127.0.0.1:15078/api/workspace -TimeoutSec 5
+              if ($null -eq $workspace.collections) { throw 'Workspace API response is invalid.' }
+              if (-not (Test-Path "$env:WebPostman__DataDirectory/workspace.db")) { throw 'SQLite database was not created.' }
+            }
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
             Get-Content "$env:RUNNER_TEMP/webpostman-out.log", "$env:RUNNER_TEMP/webpostman-err.log" -ErrorAction SilentlyContinue
@@ -204,7 +213,8 @@ jobs:
           Includes the frontend and .NET runtime. No Node.js or .NET installation required.
           Requires a glibc-based x64 Linux distribution with .NET 8 native dependencies
           (including ICU, OpenSSL and zlib); Alpine/musl is not supported by this package.
-          Workspace data: App_Data/workspace.db. Back up App_Data before updating.
+          Server data: App_Data. Back up the entire directory before updating.
+          Account-enabled versions keep anonymous workspaces only in the browser.
 
           Optional systemd service:
             sudo bash scripts/install-service.sh
@@ -238,8 +248,14 @@ jobs:
             sleep 1
           done
           [[ "$ready" == true ]] || { echo 'Packaged frontend did not become ready.' >&2; exit 1; }
-          curl -fsS http://127.0.0.1:15078/api/workspace | jq -e '.collections | type == "array"'
-          test -s "$test_dir/data/workspace.db"
+          if [[ -f WebPostman.Api/Accounts.cs ]]; then
+            curl -fsS http://127.0.0.1:15078/api/auth/me | jq -e 'has("user") and .user == null'
+            [[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15078/api/workspace)" == 401 ]]
+            test -s "$test_dir/data/accounts.db"
+          else
+            curl -fsS http://127.0.0.1:15078/api/workspace | jq -e '.collections | type == "array"'
+            test -s "$test_dir/data/workspace.db"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -282,7 +298,7 @@ jobs:
           - Windows x64: extract the ZIP and double-click `Start-WebPostman.cmd`.
           - Linux x64 (glibc): extract the tar.gz, then run `cd WebPostman && ./start-webpostman.sh`.
 
-          Open http://127.0.0.1:5078. Workspace data is stored in `App_Data/workspace.db`; back up this directory before updating. SHA256SUMS.txt covers both packages.
+          Open http://127.0.0.1:5078. Server data is stored in `App_Data`; back up the entire directory before updating. Account-enabled versions keep anonymous workspaces only in the browser. SHA256SUMS.txt covers both packages.
           NOTES
           if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --verify-tag --title "WebPostman $RELEASE_TAG" --notes-file release-notes.txt

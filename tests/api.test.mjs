@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, copyFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -33,15 +33,21 @@ test('API regression: migration, conflicts, validation, HTTP execution and histo
   targetUrl = await listen(cross); const upstreamUrl = await listen(upstream); const base = await freePort()
   const app = spawn('dotnet', [path.join(root, 'WebPostman.Api/bin/Release/net8.0/WebPostman.Api.dll')], { cwd: path.join(root, 'WebPostman.Api'), env: { ...process.env, WebPostman__DataDirectory: directory, WebPostman__ListenUrl: base }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   let logs = ''; app.stdout.on('data', d => logs += d); app.stderr.on('data', d => logs += d)
+  let cookie = ''
   const call = async (route, method = 'GET', body, signal) => {
-    const response = await fetch(base + route, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal })
+    const response = await fetch(base + route, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), signal })
+    for (const value of response.headers.getSetCookie()) if (value.startsWith('webpostman-session=')) cookie = value.split(';')[0]
     const raw = await response.text(); return { status: response.status, data: raw ? JSON.parse(raw) : null }
   }
   const execute = (overrides = {}, effectiveAuth = auth, variables = {}) => call('/api/execute', 'POST', { request: { ...request, url: upstreamUrl, ...overrides }, effectiveAuth, variables })
   try {
     let ready = false
-    for (let n = 0; n < 100; n++) { try { if ((await call('/api/workspace')).status === 200) { ready = true; break } } catch {} await new Promise(r => setTimeout(r, 100)) }
+    for (let n = 0; n < 100; n++) { try { if ((await call('/api/auth/me')).status === 200) { ready = true; break } } catch {} await new Promise(r => setTimeout(r, 100)) }
     assert.ok(ready, logs)
+    const registered = await call('/api/auth/register', 'POST', { email: 'regression@example.test', password: 'Regression-Password-123', confirmPassword: 'Regression-Password-123' })
+    assert.equal(registered.status, 200)
+    const userDir = path.join(directory, 'users', registered.data.user.id)
+    await mkdir(userDir, { recursive: true }); await copyFile(path.join(directory, 'workspace.db'), path.join(userDir, 'workspace.db'))
     await t.test('legacy migration keeps entities and history, independent history pagination', async () => {
       const w = (await call('/api/workspace')).data
       assert.equal(w.collections[0].name, 'Legacy'); assert.deepEqual(w.history, [])

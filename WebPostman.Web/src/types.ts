@@ -10,7 +10,10 @@ export type Workspace = { collections: Collection[]; environments: Environment[]
 export type CookieInfo = { name: string; value: string; attributes: string; raw: string }
 export type TraceStage = { name: string; durationMs: number; detail: string }
 export type RequestTrace = { url: string; originalUrl?: string; method: string; httpVersion: string; requestHeaders: Record<string, string>; requestBody: string; stages: TraceStage[] }
-export type ExecuteResult = { status: number; statusText: string; durationMs: number; size: number; contentType: string; headers: Record<string, string>; body: string; truncated: boolean; cookies: CookieInfo[]; trace: RequestTrace; bodyBase64?: string; fileName?: string }
+export type ExecuteResult = { status: number; statusText: string; durationMs: number; size: number; contentType: string; headers: Record<string, string>; body: string; truncated: boolean; cookies: CookieInfo[]; trace: RequestTrace; bodyBase64?: string; fileName?: string; history?: History }
+export type UserInfo = { id: string; email: string }
+export type ShareSummary = { id: string; ownerId: string; author: string; kind: 'request' | 'collection'; title: string; description: string; createdAt: string; requestCount: number }
+export type SharedItem = ShareSummary & { collection: Collection }
 
 export const uid = () => crypto.randomUUID()
 export const newRow = (): Row => ({ id: uid(), key: '', value: '', enabled: true })

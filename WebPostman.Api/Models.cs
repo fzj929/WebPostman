@@ -27,4 +27,11 @@ public sealed record RequestTrace(string Url, string Method, string HttpVersion,
     string RequestBody, List<TraceStage> Stages, string OriginalUrl = "");
 public sealed record ExecuteResult(int Status, string StatusText, long DurationMs, long Size, string ContentType,
     Dictionary<string, string> Headers, string Body, bool Truncated,
-    List<CookieInfo> Cookies, RequestTrace Trace, string? BodyBase64 = null, string FileName = "response.bin");
+    List<CookieInfo> Cookies, RequestTrace Trace, string? BodyBase64 = null, string FileName = "response.bin", HistoryEntry? History = null);
+public sealed record RegisterInput(string Email, string Password, string ConfirmPassword);
+public sealed record LoginInput(string Email, string Password);
+public sealed record UserInfo(string Id, string Email);
+public sealed record ShareInput(string Kind, string CollectionId, string? RequestId, string Title, string Description = "", long Revision = -1);
+public sealed record SharedItem(string Id, string OwnerId, string Author, string Kind, string Title, string Description, DateTimeOffset CreatedAt, CollectionItem Collection);
+public sealed record ShareSummary(string Id, string OwnerId, string Author, string Kind, string Title, string Description, DateTimeOffset CreatedAt, int RequestCount);
+public sealed record SharePage(List<ShareSummary> Items, int Total);

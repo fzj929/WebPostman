@@ -12,8 +12,10 @@ public sealed class WorkspaceStore
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
 
     public WorkspaceStore(IWebHostEnvironment env, IConfiguration configuration)
+        : this(configuration["WebPostman:DataDirectory"] ?? Path.Combine(env.ContentRootPath, "App_Data")) { }
+
+    public WorkspaceStore(string directory)
     {
-        var directory = configuration["WebPostman:DataDirectory"] ?? Path.Combine(env.ContentRootPath, "App_Data");
         Directory.CreateDirectory(directory);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(directory, "workspace.db") }.ToString();
         using var db = Open(); using var tx = db.BeginTransaction();
