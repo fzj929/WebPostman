@@ -1,0 +1,147 @@
+name: Build portable release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (for example v1.0)
+        required: true
+        default: v1.0
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x64 portable
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      - name: Validate version tag
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z.-]+)?$') {
+            throw 'Expected a version tag such as v1.0 or v1.0.1.'
+          }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: WebPostman.Web/package-lock.json
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build frontend
+        working-directory: WebPostman.Web
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish with bundled .NET runtime
+        run: |
+          dotnet publish WebPostman.Api/WebPostman.Api.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -o dist/WebPostman
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Add launcher and instructions
+        run: |
+          @'
+          @echo off
+          cd /d "%~dp0"
+          echo WebPostman: http://127.0.0.1:5078
+          echo Keep this window open. Press Ctrl+C to stop.
+          start "" "http://127.0.0.1:5078"
+          WebPostman.Api.exe
+          pause
+          '@ | Set-Content dist/WebPostman/Start-WebPostman.cmd -Encoding ascii
+          @'
+          WebPostman - Windows x64 portable edition
+
+          1. Extract the entire ZIP to a writable folder.
+          2. Double-click Start-WebPostman.cmd.
+          3. Open http://127.0.0.1:5078 (refresh if the server is still starting).
+          4. Keep the console open; press Ctrl+C to stop.
+
+          Node.js and .NET do not need to be installed.
+          Workspace data is stored in App_Data/workspace.db. Back it up before updating.
+          To update, stop the app and extract the new version without deleting App_Data.
+
+          Optional Windows service (administrator PowerShell):
+            .\scripts\install-service.ps1
+          '@ | Set-Content dist/WebPostman/READ-ME.txt -Encoding ascii
+          Copy-Item LICENSE dist/WebPostman/LICENSE
+
+      - name: Smoke test packaged application
+        run: |
+          $publish = (Resolve-Path dist/WebPostman).Path
+          $env:WebPostman__ListenUrl = 'http://127.0.0.1:15078'
+          $env:WebPostman__DataDirectory = Join-Path $env:RUNNER_TEMP 'webpostman-smoke'
+          $app = Start-Process -FilePath "$publish/WebPostman.Api.exe" -WorkingDirectory $publish -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP/webpostman-out.log" -RedirectStandardError "$env:RUNNER_TEMP/webpostman-err.log"
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if ($app.HasExited) { throw 'Packaged application exited before startup.' }
+              try {
+                $page = Invoke-WebRequest http://127.0.0.1:15078/ -TimeoutSec 2
+                if ($page.Content -match '<title>WebPostman') { $ready = $true; break }
+              } catch { }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) { throw 'Packaged frontend did not become ready.' }
+            $workspace = Invoke-RestMethod http://127.0.0.1:15078/api/workspace -TimeoutSec 5
+            if ($null -eq $workspace.collections) { throw 'Workspace API response is invalid.' }
+            if (-not (Test-Path "$env:WebPostman__DataDirectory/workspace.db")) { throw 'SQLite database was not created.' }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+            Get-Content "$env:RUNNER_TEMP/webpostman-out.log", "$env:RUNNER_TEMP/webpostman-err.log" -ErrorAction SilentlyContinue
+          }
+
+      - name: Create ZIP and checksum
+        run: |
+          $archive = "WebPostman-$env:RELEASE_TAG-win-x64.zip"
+          Compress-Archive -Path dist/WebPostman -DestinationPath "dist/$archive"
+          $hash = (Get-FileHash "dist/$archive" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WebPostman-${{ env.RELEASE_TAG }}-win-x64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --verify-tag --title "WebPostman $env:RELEASE_TAG" --notes 'Windows x64 portable build. Download the ZIP, extract all files, and double-click Start-WebPostman.cmd. Includes the .NET runtime and frontend; no SDK installation required.'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $archives = @(Get-ChildItem dist/*.zip | ForEach-Object FullName)
+          gh release upload $env:RELEASE_TAG @archives dist/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

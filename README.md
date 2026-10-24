@@ -2,6 +2,14 @@
 
 本地运行的 API 请求工作台。后端使用 .NET 8，页面使用 Vue 3，数据保存在本地 SQLite。
 
+## 下载即用（Windows x64）
+
+从 [Releases](https://github.com/fzj929/WebPostman/releases) 下载 `WebPostman-v版本号-win-x64.zip`，完整解压到可写目录后，双击 `Start-WebPostman.cmd`，访问 `http://127.0.0.1:5078`。便携包已包含前端页面及 .NET 运行时，无需安装 Node.js、SDK 或 .NET。保持命令窗口打开，按 Ctrl+C 停止。
+
+工作区保存在解压目录的 `App_Data/workspace.db`。更新前停止程序并备份该目录，解压新版本时保留 `App_Data`。Release 同时提供 `SHA256SUMS.txt` 用于校验下载包。需要后台运行时，可使用包内的 `scripts/install-service.ps1` 安装 Windows 服务。
+
+GitHub Actions 工作流 `Build portable release` 在推送 `v*` 标签时自动构建、启动验证并上传 Release 附件。也可在 Actions 中选择该工作流，点击 **Run workflow** 并填写已有标签（例如 `v1.0`）补发安装包；构建使用该标签对应的源码。
+
 ## 运行
 
 需要 .NET 8 SDK、Node.js 20.19+。
