@@ -1,4 +1,6 @@
 import test from 'node:test'
+import { databaseEnvironmentFor } from './database-environment.mjs'
+const databaseEnvironment = databaseEnvironmentFor('accounts')
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
@@ -15,7 +17,7 @@ const listen = async server => { server.listen(0, '127.0.0.1'); await once(serve
 test('accounts, anonymous privacy and public request/collection sharing', async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'webpostman-accounts-'))
   const reserve = http.createServer(); const base = await listen(reserve); await new Promise(r => reserve.close(r))
-  const app = spawn('dotnet', [path.join(root, 'WebPostman.Api/bin/Release/net8.0/WebPostman.Api.dll')], { cwd: path.join(root, 'WebPostman.Api'), env: { ...process.env, WebPostman__ListenUrl: base, WebPostman__DataDirectory: directory }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const app = spawn('dotnet', [path.join(root, 'WebPostman.Api/bin/Release/net8.0/WebPostman.Api.dll')], { cwd: path.join(root, 'WebPostman.Api'), env: { ...process.env, WebPostman__ListenUrl: base, WebPostman__DataDirectory: directory, ...databaseEnvironment }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   let logs = ''; app.stdout.on('data', d => logs += d); app.stderr.on('data', d => logs += d)
   const client = () => ({ cookie: '', async call(route, method = 'GET', body, extraHeaders = {}) {
     const result = await fetch(base + route, { method, headers: { 'Content-Type': 'application/json', ...(this.cookie ? { Cookie: this.cookie } : {}), ...extraHeaders }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -37,7 +39,7 @@ test('accounts, anonymous privacy and public request/collection sharing', async 
     await t.test('registration validates confirmation, normalizes email and sets private session cookie', async () => {
       assert.equal((await guest.call('/api/auth/register', 'POST', { email: 'a@example.test', password, confirmPassword: 'wrong' })).status, 400)
       const registered = await a.call('/api/auth/register', 'POST', { email: ' A@Example.Test ', password, confirmPassword: password })
-      assert.equal(registered.status, 200); userA = registered.data.user
+      assert.equal(registered.status, 200, logs); userA = registered.data.user
       assert.equal(userA.email, 'a@example.test')
       const cookie = registered.cookies.find(x => x.startsWith('webpostman-session=') && !x.includes('1970'))
       assert.match(cookie, /HttpOnly/i); assert.match(cookie, /SameSite=Strict/i); assert.match(cookie, /path=\/api/i)

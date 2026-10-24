@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using WebPostman.Api.Data;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -5,7 +7,7 @@ using System.Text.RegularExpressions;
 
 namespace WebPostman.Api;
 
-public sealed class ShareStore(AccountStore accounts)
+public sealed class ShareStore(AccountStore accounts, IDbContextFactory<WebPostmanDbContext> factory)
 {
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
     private static bool Sensitive(string key) => Regex.IsMatch(key, "authorization|cookie|token|secret|password|passwd|key|credential|session|signature|jwt", RegexOptions.IgnoreCase);
@@ -56,11 +58,16 @@ public sealed class ShareStore(AccountStore accounts)
     }
     private static RequestItem Scrub(RequestItem request, AuthSettings effectiveAuth) => request with
     {
-        Url = ScrubUrl(request.Url, effectiveAuth.Key), Auth = ScrubAuth(request.Auth), Cookies = [], Files = null, ShowSensitiveTrace = false,
+        Url = ScrubUrl(request.Url, effectiveAuth.Key),
+        Auth = ScrubAuth(request.Auth),
+        Cookies = [],
+        Files = null,
+        ShowSensitiveTrace = false,
         Headers = request.Headers.Select(x => Sensitive(x.Key) || (!string.IsNullOrEmpty(effectiveAuth.Key) && x.Key.Equals(effectiveAuth.Key, StringComparison.OrdinalIgnoreCase)) ? x with { Value = "REDACTED" } : x).ToList(),
         Params = request.Params.Select(x => Sensitive(x.Key) || (!string.IsNullOrEmpty(effectiveAuth.Key) && x.Key.Equals(effectiveAuth.Key, StringComparison.OrdinalIgnoreCase)) ? x with { Value = "REDACTED" } : x).ToList(),
         Form = request.Form.Select(x => Sensitive(x.Key) ? x with { Value = "REDACTED" } : x).ToList(),
-        Body = ScrubBody(request), FileFields = request.FileFields?.Select(x => x with { FileName = Path.GetFileName(x.FileName.Replace('\\', '/')) }).ToList()
+        Body = ScrubBody(request),
+        FileFields = request.FileFields?.Select(x => x with { FileName = Path.GetFileName(x.FileName.Replace('\\', '/')) }).ToList()
     };
     public async Task<(CollectionItem Collection, long Revision)> PreviewAsync(string userId, ShareInput input)
     {
@@ -82,30 +89,37 @@ public sealed class ShareStore(AccountStore accounts)
         var preview = await PreviewAsync(userId, input);
         if (input.Revision != preview.Revision) throw new RevisionConflictException();
         var item = new SharedItem(Guid.NewGuid().ToString("N"), userId, "用户 " + userId[..6], input.Kind, input.Title.Trim(), input.Description.Trim(), DateTimeOffset.UtcNow, preview.Collection);
-        using var db = accounts.Open(); using var c = AccountStore.Command(db, "INSERT INTO shares SELECT $id,$owner,$kind,$title,$description,$at,$json WHERE (SELECT COUNT(*) FROM shares WHERE owner_id=$owner)<200", ("$id", item.Id), ("$owner", userId), ("$kind", item.Kind), ("$title", item.Title), ("$description", item.Description), ("$at", item.CreatedAt.ToString("O")), ("$json", JsonSerializer.Serialize(item, _json)));
-        if (c.ExecuteNonQuery() == 0) throw new ArgumentException("每个账户最多保留 200 条分享，请先撤回旧分享。");
+        using var db = factory.CreateDbContext(); using var transaction = db.Database.BeginTransaction();
+        // Lock the owner row before counting so concurrent publishers cannot exceed the quota.
+        db.Users.Where(x => x.Id == userId).ExecuteUpdate(x => x.SetProperty(u => u.ShareRevision, u => u.ShareRevision + 1));
+        if (db.Shares.Count(x => x.OwnerId == userId) >= 200) throw new ArgumentException("每个账户最多保留 200 条分享，请先撤回旧分享。");
+        db.Shares.Add(new ShareEntity { Id = item.Id, OwnerId = userId, Kind = item.Kind, Title = item.Title, Description = item.Description, CreatedAt = item.CreatedAt.ToUnixTimeMilliseconds(), Json = JsonSerializer.Serialize(item, _json) });
+        db.SaveChanges(); transaction.Commit();
         return item;
     }
     public SharePage List(string? query, string? kind, string? owner, int offset, int limit)
     {
-        var where = "WHERE ($query='' OR instr(lower(title),lower($query))>0 OR instr(lower(description),lower($query))>0) AND ($kind='' OR kind=$kind) AND ($owner='' OR owner_id=$owner)";
-        using var db = accounts.Open();
-        object Param(string? value) => value ?? "";
-        using var count = AccountStore.Command(db, "SELECT COUNT(*) FROM shares " + where, ("$query", Param(query)), ("$kind", Param(kind)), ("$owner", Param(owner)));
-        var total = Convert.ToInt32(count.ExecuteScalar());
-        using var c = AccountStore.Command(db, "SELECT json FROM shares " + where + " ORDER BY created_at DESC,id DESC LIMIT $limit OFFSET $offset", ("$query", Param(query)), ("$kind", Param(kind)), ("$owner", Param(owner)), ("$limit", limit), ("$offset", offset));
-        using var reader = c.ExecuteReader(); var items = new List<ShareSummary>();
-        while (reader.Read()) { var x = JsonSerializer.Deserialize<SharedItem>(reader.GetString(0), _json)!; items.Add(new(x.Id, x.OwnerId, x.Author, x.Kind, x.Title, x.Description, x.CreatedAt, x.Collection.Requests.Count)); }
-        return new(items, total);
+        using var db = factory.CreateDbContext();
+        var rows = db.Shares.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrEmpty(query)) { var search = query.ToLowerInvariant(); rows = rows.Where(x => x.Title.ToLower().Contains(search) || x.Description.ToLower().Contains(search)); }
+        if (!string.IsNullOrEmpty(kind)) rows = rows.Where(x => x.Kind == kind);
+        if (!string.IsNullOrEmpty(owner)) rows = rows.Where(x => x.OwnerId == owner);
+        using var transaction = db.Database.BeginTransaction(System.Data.IsolationLevel.Serializable);
+        var total = rows.Count();
+        var items = rows.OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id).Skip(offset).Take(limit).Select(x => x.Json).ToList()
+            .Select(json => JsonSerializer.Deserialize<SharedItem>(json, _json)!)
+            .Select(x => new ShareSummary(x.Id, x.OwnerId, x.Author, x.Kind, x.Title, x.Description, x.CreatedAt, x.Collection.Requests.Count)).ToList();
+        transaction.Commit(); return new(items, total);
     }
     public SharedItem Get(string id)
     {
-        using var db = accounts.Open(); using var c = AccountStore.Command(db, "SELECT json FROM shares WHERE id=$id", ("$id", id));
-        return c.ExecuteScalar() is string json ? JsonSerializer.Deserialize<SharedItem>(json, _json)! : throw new KeyNotFoundException();
+        using var db = factory.CreateDbContext();
+        var json = db.Shares.AsNoTracking().Where(x => x.Id == id).Select(x => x.Json).SingleOrDefault() ?? throw new KeyNotFoundException();
+        return JsonSerializer.Deserialize<SharedItem>(json, _json)!;
     }
     public void Delete(string id, string owner)
     {
-        using var db = accounts.Open(); using var c = AccountStore.Command(db, "DELETE FROM shares WHERE id=$id AND owner_id=$owner", ("$id", id), ("$owner", owner));
-        if (c.ExecuteNonQuery() == 0) throw new KeyNotFoundException();
+        using var db = factory.CreateDbContext();
+        if (db.Shares.Where(x => x.Id == id && x.OwnerId == owner).ExecuteDelete() == 0) throw new KeyNotFoundException();
     }
 }

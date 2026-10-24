@@ -109,7 +109,7 @@ jobs:
               Start-Sleep -Seconds 1
             }
             if (-not $ready) { throw 'Packaged frontend did not become ready.' }
-            if (Test-Path WebPostman.Api/Accounts.cs) {
+            if ((Test-Path WebPostman.Api/Accounts.cs) -or (Test-Path WebPostman.Api/Services/AccountStore.cs)) {
               $session = Invoke-RestMethod http://127.0.0.1:15078/api/auth/me -TimeoutSec 5
               if (-not ($session.PSObject.Properties.Name -contains 'user')) { throw 'Session API response is invalid.' }
               $private = Invoke-WebRequest http://127.0.0.1:15078/api/workspace -SkipHttpErrorCheck -TimeoutSec 5
@@ -248,7 +248,7 @@ jobs:
             sleep 1
           done
           [[ "$ready" == true ]] || { echo 'Packaged frontend did not become ready.' >&2; exit 1; }
-          if [[ -f WebPostman.Api/Accounts.cs ]]; then
+          if [[ -f WebPostman.Api/Accounts.cs || -f WebPostman.Api/Services/AccountStore.cs ]]; then
             curl -fsS http://127.0.0.1:15078/api/auth/me | jq -e 'has("user") and .user == null'
             [[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15078/api/workspace)" == 401 ]]
             test -s "$test_dir/data/accounts.db"

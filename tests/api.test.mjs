@@ -1,4 +1,6 @@
 import test from 'node:test'
+import { databaseEnvironmentFor } from './database-environment.mjs'
+const databaseEnvironment = databaseEnvironmentFor('api')
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn, spawnSync } from 'node:child_process'
@@ -31,7 +33,7 @@ test('API regression: migration, conflicts, validation, HTTP execution and histo
   })
   const cross = http.createServer((req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(req.headers)) })
   targetUrl = await listen(cross); const upstreamUrl = await listen(upstream); const base = await freePort()
-  const app = spawn('dotnet', [path.join(root, 'WebPostman.Api/bin/Release/net8.0/WebPostman.Api.dll')], { cwd: path.join(root, 'WebPostman.Api'), env: { ...process.env, WebPostman__DataDirectory: directory, WebPostman__ListenUrl: base }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const app = spawn('dotnet', [path.join(root, 'WebPostman.Api/bin/Release/net8.0/WebPostman.Api.dll')], { cwd: path.join(root, 'WebPostman.Api'), env: { ...process.env, WebPostman__DataDirectory: directory, WebPostman__ListenUrl: base, ...databaseEnvironment }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   let logs = ''; app.stdout.on('data', d => logs += d); app.stderr.on('data', d => logs += d)
   let cookie = ''
   const call = async (route, method = 'GET', body, signal) => {
@@ -45,7 +47,7 @@ test('API regression: migration, conflicts, validation, HTTP execution and histo
     for (let n = 0; n < 100; n++) { try { if ((await call('/api/auth/me')).status === 200) { ready = true; break } } catch {} await new Promise(r => setTimeout(r, 100)) }
     assert.ok(ready, logs)
     const registered = await call('/api/auth/register', 'POST', { email: 'regression@example.test', password: 'Regression-Password-123', confirmPassword: 'Regression-Password-123' })
-    assert.equal(registered.status, 200)
+    assert.equal(registered.status, 200, logs)
     const userDir = path.join(directory, 'users', registered.data.user.id)
     await mkdir(userDir, { recursive: true }); await copyFile(path.join(directory, 'workspace.db'), path.join(userDir, 'workspace.db'))
     await t.test('legacy migration keeps entities and history, independent history pagination', async () => {

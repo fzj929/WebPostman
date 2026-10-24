@@ -31,4 +31,36 @@ jobs:
       - run: npm run build
         working-directory: WebPostman.Web
       - run: dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
-      - run: node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs
+      - run: node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs
+
+  mysql:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: regression-only-password
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pregression-only-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      WEBPOSTMAN_TEST_MYSQL_CONNECTION: 'Server=127.0.0.1;Port=3306;Database=webpostman_test_ci;User=root;Password=regression-only-password;'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
+      - run: node --test tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs

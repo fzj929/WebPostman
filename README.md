@@ -1,6 +1,6 @@
 # WebPostman
 
-本地运行的 API 请求工作台。后端使用 .NET 8，页面使用 Vue 3，数据保存在本地 SQLite。
+本地运行的 API 请求工作台。后端使用 .NET 8、ASP.NET Core Controller 和 EF Core 8，页面使用 Vue 3；默认使用 SQLite，也支持 MySQL 8.0。
 
 ## 账户、本机存储与分享
 
@@ -17,13 +17,13 @@
 
 所有分享仅在同一个服务实例内可见，不会自动同步到其他独立安装。多人使用时部署到同一服务地址；默认仍只监听本机。远程访问应通过 HTTPS 反向代理，并限制请求代理的网络访问范围；该工具会代用户访问所填写的 HTTP 地址，适合在可信环境中使用。默认信任本机反向代理的转发协议信息，其他代理需要按部署环境配置可信代理。
 
-账户和分享位于 `App_Data/accounts.db`，个人工作区位于 `App_Data/users/<用户ID>/workspace.db`。升级前的匿名服务端 `workspace.db` 保留原样，不会分配给任意注册用户；请先在旧版导出，再登录目标账户导入。备份服务端时应备份整个 `App_Data`。
+默认 SQLite 模式下，账户、会话、分享、个人集合、环境和历史统一位于 `App_Data/accounts.db`，通过用户 ID 隔离；旧版 `users/<用户ID>/workspace.db` 在该用户首次访问工作区时导入。升级前的匿名服务端 `workspace.db` 保留原样，不会分配给任意注册用户；请先在旧版导出，再登录目标账户导入。备份服务端时应备份整个 `App_Data`。
 
 ## 下载即用（Windows / Linux x64）
 
 从 [Releases](https://github.com/fzj929/WebPostman/releases) 下载 `WebPostman-v版本号-win-x64.zip`，完整解压到可写目录后，双击 `Start-WebPostman.cmd`，访问 `http://127.0.0.1:5078`。便携包已包含前端页面及 .NET 运行时，无需安装 Node.js、SDK 或 .NET。保持命令窗口打开，按 Ctrl+C 停止。
 
-登录账户与分享数据保存在解压目录的 `App_Data`（含 `accounts.db` 和 `users` 目录）；游客数据在浏览器中。更新前停止程序并备份整个 `App_Data`，游客可通过导出备份。Release 同时提供 `SHA256SUMS.txt` 用于校验下载包。需要后台运行时，可使用包内的 `scripts/install-service.ps1` 安装 Windows 服务。
+默认 SQLite 模式下，登录账户与分享数据保存在解压目录的 `App_Data/accounts.db`，已有旧版 `users` 目录请一并保留；游客数据在浏览器中。更新前停止程序并备份整个 `App_Data`，游客可通过导出备份。Release 同时提供 `SHA256SUMS.txt` 用于校验下载包。需要后台运行时，可使用包内的 `scripts/install-service.ps1` 安装 Windows 服务。
 
 Linux x64 下载 `WebPostman-v版本号-linux-x64.tar.gz`，解压后运行：
 
@@ -66,6 +66,53 @@ dotnet run --project WebPostman.Api
 ```
 
 浏览器打开 `http://127.0.0.1:5078`。应用只监听本机地址。账户与分享数据在 `WebPostman.Api/App_Data`，游客工作区在浏览器中。
+
+## 后台结构与数据库配置
+
+```text
+WebPostman.Api/
+  Controllers/      # Auth、Workspace、History、Shares、Execute，按功能分组
+  Services/         # 账户、工作区、分享、请求执行业务与 EF 查询
+  Data/             # DbContext、实体映射、配置、旧版只读导入
+    Migrations/     # 可版本管理的数据库结构迁移
+  Authentication/   # 会话认证处理器
+  Middleware/       # 统一错误、同源校验、跨页面账户切换检查
+  Contracts/        # 接口输入与响应 DTO
+  Validation/       # 业务输入校验
+  Program.cs        # 服务注册与应用管道
+```
+
+现有 `/api/auth`、`/api/workspace`、`/api/history`、`/api/shares`、`/api/execute` 地址及返回结构保持兼容。DbContext 由工厂按操作创建，不跨请求共享；保存使用数据库事务和修订号条件更新，避免并发覆盖。集合内的请求/文件夹以及分享快照保留为 JSON 文档，账号、会话、工作区版本、集合、环境、历史和分享分别映射到 EF 实体表。
+
+无需配置即可使用 SQLite，文件为 `<WebPostman:DataDirectory>/accounts.db`；数据目录未配置时为程序内容目录下的 `App_Data`。`Database:Provider` 默认为 `Sqlite`，不支持的值会在启动时明确报错，不会静默切换数据库。
+
+使用 MySQL 时，先准备 MySQL 8.0 数据库（utf8mb4）及可建表、创建索引和读写的数据库账号，在 `WebPostman.Api/appsettings.json` 或发布目录的同名文件中合并以下配置；密码也可通过环境变量 `ConnectionStrings__WebPostman` 提供：
+
+```json
+{
+  "Database": {
+    "Provider": "MySql",
+    "MySqlVersion": "8.0.36",
+    "ImportLegacyData": false
+  },
+  "ConnectionStrings": {
+    "WebPostman": "Server=127.0.0.1;Port=3306;Database=webpostman;User=webpostman;Password=替换为你的密码;"
+  }
+}
+```
+
+`MySqlVersion` 填写实际服务器版本；使用显式版本配置，无需自动探测。也可设置 `Database__Provider=MySql`、`Database__MySqlVersion=8.0.46`。启动会应用 EF Migration；首次升级请只启动一个实例完成建表/旧数据导入，然后再启动其他实例。两个数据库提供程序共用实体与业务代码；初始迁移为不同提供程序选择对应列类型、二进制排序规则，保持 ID 大小写语义一致，后续增加迁移时也需在两个提供程序上验证。
+
+MySQL 默认不扫描本地旧数据库。若要从 **v1.2 及更早版本** 升级到全新的 MySQL 数据库，先停止旧程序，备份并将完整旧 `App_Data` 指定为 `WebPostman:DataDirectory`，设置 `Database:ImportLegacyData=true` 后启动；旧文件只读，工作区按用户首次访问时导入，因此所有旧用户完成导入前应保留该目录。此选项仅导入 EF 重构之前的旧表，不用于已经运行 EF 版本的 SQLite/MySQL 互相迁移；切换提供程序不会同步两个数据库中的后续修改。新版本 SQLite 默认启用旧数据导入。
+
+可在独立测试库上执行 MySQL 回归（账号需有创建测试数据库权限）：
+
+```powershell
+$env:WEBPOSTMAN_TEST_MYSQL_CONNECTION='Server=127.0.0.1;Port=3306;Database=webpostman_test_local;User=测试账号;Password=测试密码;'
+node --test tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs
+```
+
+测试只接受 `webpostman_test` 开头的库名，并为每组测试添加 `_api`、`_accounts`、`_storage` 后缀；请使用空的可丢弃测试库，运行后自行删除这些测试库，重复运行前也需重新准备空库。SQLite 测试不需要此环境变量，自动使用临时目录。新增存储测试覆盖旧账号/会话/分享导入、大小写 ID、并发写入冲突、事务回滚与重启持久化。
 
 ## 系统服务
 
@@ -148,23 +195,23 @@ bash scripts/manage-service.sh run
 - 自动添加 `Accept`、`User-Agent`、`Accept-Encoding` 请求头，自定义同名头可以覆盖。
 - 环境变量 `{{变量名}}`、本地工作区导入导出，以及 Postman Collection v2.1 的基础导入。
 
-请求凭据及历史快照以明文保存在相应的浏览器工作区、服务端账户 SQLite 工作区或导出的 JSON 中；登录密码仅存哈希。请妥善保管这些文件；不要将本应用直接作为公网服务部署。
+请求凭据及历史快照以明文保存在相应的浏览器工作区、服务端账户数据库或导出的 JSON 中；登录密码仅存哈希。请妥善保管这些文件；不要将本应用直接作为公网服务部署。
 
 测试时可通过环境变量 `WebPostman__ListenUrl` 和 `WebPostman__DataDirectory` 指定独立端口与数据目录，避免更改已有工作区。
 
 ### 数据升级与验证
 
-个人工作区存储兼容旧数据库的分表迁移，迁移在事务内完成并保留原始 `workspace` JSON 行。旧匿名服务器数据库不会自动分配给注册用户，请使用旧版导出后导入到目标账户。升级前请备份 `App_Data`；降级旧版本不能读取新版表中的后续修改。新旧版本应分别使用自己的数据目录。
+EF Core 启动时通过版本化 Migration 创建/升级 `wp_` 前缀的数据表。默认 SQLite 模式自动导入旧版账户、密码哈希、有效会话和分享；个人工作区首次访问时，在事务内导入旧版分表或原始 `workspace` JSON，保留集合顺序、历史和修订号。旧表、旧个人数据库保留原样作为升级来源，导入完成后只写新表，重复启动不会恢复已经撤回的旧分享或覆盖新修改。旧匿名服务器数据库不会自动分配给注册用户，请使用旧版导出后导入到目标账户。升级前请备份 `App_Data`；降级旧版本不能读取新版表中的后续修改。新旧版本应分别使用自己的数据目录。
 
 安装前端依赖后，可在仓库根目录执行：
 
 ```powershell
 npm --prefix WebPostman.Web run build
 dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
-node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs
+node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs
 ```
 
-测试使用独立端口和临时 SQLite 数据库，需要 Node.js 22、.NET 8 SDK 和 Python 3（生成旧库迁移测试数据）。`Regression checks` 在提交到 main 或创建 PR 时自动在 Windows / Linux 上执行。发布工作流继续对两个平台的便携包执行启动检查。
+测试使用独立端口和临时 SQLite 数据库，需要 Node.js 22、.NET 8 SDK 和 Python 3（生成旧库迁移测试数据）。`Regression checks` 在提交到 main 或创建 PR 时自动在 Windows / Linux 上执行 SQLite 回归，并在独立 MySQL 8.0 服务上执行全部后台回归。发布工作流继续对两个平台的便携包执行启动检查。
 
 ## 许可证
 
