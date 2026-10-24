@@ -121,6 +121,8 @@ function activateEditor(tab: EditorTab) {
 }
 function addEditor(request: RequestItem, collectionId: string, saved = false, variables: Record<string, string> | null = null) {
   const normalized = { ...newRequest(), ...copy(request) }
+  delete normalized.files
+  normalized.cookies ??= [newRow()]
   const tab: EditorTab = { id: uid(), draft: normalized, collectionId, originalCollectionId: saved ? collectionId : '', requestId: saved ? normalized.id : '', response: null, error: '', files: [], variables, baseline: JSON.stringify([normalized, collectionId]), busy: false, controller: null }
   editorTabs.value.push(tab); activateEditor(editorTabs.value[editorTabs.value.length - 1])
 }

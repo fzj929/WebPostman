@@ -121,3 +121,15 @@ test('unsaved editor close can be cancelled and the draft remains intact', () =>
     assert.equal(prevented, true)
   } finally { globalThis.confirm = originalConfirm }
 })
+test('saving an existing server DTO clears dirty status even with null file payload', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => jsonResponse({ revision: 1 })
+  try {
+    const vm = createEditor()
+    const request = { ...newRequest(), name: 'Saved request', files: null }
+    vm.workspace.value.collections.push({ id: 'c', name: 'Collection', auth: newAuth(), folders: [], requests: [request] })
+    vm.openRequest(vm.workspace.value.collections[0], request)
+    vm.draft.value.name = 'Changed'; await vm.saveRequest()
+    assert.equal(vm.dirty.value, false); assert.equal(vm.workspaceDirty.value, false)
+  } finally { globalThis.fetch = originalFetch }
+})
