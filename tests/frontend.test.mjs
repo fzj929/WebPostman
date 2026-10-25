@@ -16,14 +16,81 @@ const { newAuth, newRequest } = await import(typesUrl)
 const vueUrl = new URL('../WebPostman.Web/node_modules/vue/index.mjs', import.meta.url).href
 const lifecycleAdapter = dataUrl(`export * from '${vueUrl}'; export const onMounted = () => {}; export const onBeforeUnmount = () => {};`)
 const descriptor = sfc.parse(await readFile(new URL('../WebPostman.Web/src/App.vue', import.meta.url), 'utf8')).descriptor
+const mockUtilsUrl = dataUrl(compile(await readFile(new URL('../WebPostman.Web/src/mock-utils.ts', import.meta.url), 'utf8')))
+const mockComponentUrl = dataUrl('export default {}')
 const appSource = compile(sfc.compileScript(descriptor, { id: 'regression' }).content)
+  .replaceAll("from './components/MockWorkspace.vue'", `from '${mockComponentUrl}'`).replaceAll("from './mock-utils'", `from '${mockUtilsUrl}'`)
   .replaceAll("from 'vue'", `from '${lifecycleAdapter}'`).replaceAll("from './types'", `from '${typesUrl}'`).replaceAll("from './workspace-utils'", `from '${utilsUrl}'`)
 const browserStoreUrl = dataUrl(compile(await readFile(new URL('../WebPostman.Web/src/browser-store.ts', import.meta.url), 'utf8')))
 const browserStore = await import(browserStoreUrl)
 const App = (await import(dataUrl(appSource.replaceAll("from './browser-store'", `from '${browserStoreUrl}'`)))).default
+const { recordMock, editedMockBody, mockUrl } = await import(mockUtilsUrl)
+const mockDescriptor = sfc.parse(await readFile(new URL('../WebPostman.Web/src/components/MockWorkspace.vue', import.meta.url), 'utf8')).descriptor
+const mockScript = compile(sfc.compileScript(mockDescriptor, { id: 'mock-editor' }).content)
+  .replaceAll("from 'vue'", `from '${lifecycleAdapter}'`).replaceAll("from '../types'", `from '${typesUrl}'`).replaceAll("from '../mock-utils'", `from '${mockUtilsUrl}'`)
+const MockEditor = (await import(dataUrl(mockScript))).default
 const createEditor = () => { const vm = App.setup({}, { expose() {} }); vm.currentUser.value = { id: 'test-user', email: 'test@example.test' }; return vm }
 const jsonResponse = (data, status = 200) => ({ ok: status < 400, status, json: async () => data })
 const result = name => ({ body: name, contentType: 'text/plain', status: 200 })
+
+test('recording uses the executed response, preserves bytes and removes unsafe replay headers', () => {
+  const recorded = recordMock({ status: 201, body: 'café', recordedBodyBase64: 'Y2Fm6Q==', contentType: 'text/plain', headers: { 'Content-Type': 'text/plain; charset=iso-8859-1', Connection: 'X-Hop', 'X-Hop': 'removed', 'Set-Cookie': 'PRIVATE', 'Content-Encoding': 'gzip', 'Content-Length': '123', 'X-Kept': 'yes' }, trace: { originalUrl: 'https://example.test/real/path?token=PRIVATE', method: 'GET' }, history: { method: 'POST', request: { name: 'Executed request' } } })
+  assert.equal(recorded.path, '/real/path'); assert.equal(recorded.method, 'POST'); assert.equal(recorded.name, 'Executed request')
+  assert.equal(recorded.query, ''); assert.ok(!recorded.sourceUrl.includes('PRIVATE'))
+  assert.equal(recorded.response.bodyBase64, 'Y2Fm6Q=='); assert.equal(recorded.response.binary, false)
+  assert.deepEqual(recorded.response.headers.map(x => x.key), ['X-Kept'])
+  const edited = editedMockBody(recorded.response, '新的正文')
+  assert.equal(edited.bodyBase64, null); assert.equal(edited.body, '新的正文'); assert.equal(edited.contentType, 'text/plain; charset=utf-8')
+  assert.equal(recorded.response.body, 'café')
+})
+
+test('truncated responses are refused; binary edits remain Base64 and IPv6 addresses remain valid', () => {
+  assert.throws(() => recordMock({ truncated: true }), /截断/)
+  const binary = recordMock({ status: 200, body: '[binary]', bodyBase64: 'AP+A', recordedBodyBase64: 'AP+A', contentType: 'application/octet-stream', headers: {}, trace: { url: 'https://example.test/file', method: 'GET' } })
+  assert.equal(binary.response.binary, true); assert.equal(binary.response.body, '')
+  assert.equal(editedMockBody(binary.response, 'AQI=').bodyBase64, 'AQI=')
+  assert.equal(mockUrl('2001:db8::1', 8088, '/api/a', '?b=2'), 'http://[2001:db8::1]:8088/api/a?b=2')
+})
+
+test('the real request editor records its received response and guards leaving an unsaved mock', () => {
+  const vm = createEditor()
+  vm.draft.value.name = 'Unsent new draft'
+  vm.response.value = { status: 200, body: '{"ok":true}', contentType: 'application/json', headers: {}, trace: { url: 'https://example.test/executed', method: 'GET' }, history: { method: 'POST', request: { name: 'Actually executed' } } }
+  vm.prepareMock(); assert.equal(vm.sidebarTab.value, 'mocks')
+  assert.equal(vm.mockRecording.value.name, 'Actually executed'); assert.equal(vm.mockRecording.value.method, 'POST')
+  vm.mockWorkspace.value = { canLeave: () => false, hasUnsaved: () => true }
+  vm.switchSidebar('collections'); assert.equal(vm.sidebarTab.value, 'mocks')
+  let prevented = false; vm.beforeUnload({ preventDefault() { prevented = true } }); assert.equal(prevented, true)
+})
+
+test('the mock editor keeps failed edits, applies normalized saved data and protects pending recordings', async () => {
+  const oldWindow = globalThis.window, oldConfirm = globalThis.confirm
+  globalThis.window = { location: { hostname: 'server.example.test' } }; globalThis.confirm = () => false
+  const original = { status: 200, contentType: 'application/json', headers: [], body: '{}', bodyBase64: null, binary: false, delayMs: 0 }
+  const source = { name: 'Recorded', method: 'GET', path: '/api/a%20b', query: '', enabled: true, response: original, sourceUrl: 'https://source.example.test/api/a%20b', revision: 0 }
+  const server = { id: 'server', name: 'Demo', port: 8088, corsOrigins: ['*'], revision: 0, running: false, ruleCount: 0, calls: 0, rules: [] }
+  let fail = true, submitted, notice = ''
+  try {
+    const vm = MockEditor.setup({ user: { id: 'owner', email: 'owner@example.test' }, recording: source, request: async (_url, options) => {
+      if (options.method === 'POST') {
+        submitted = JSON.parse(options.body)
+        if (fail) return { ok: false, status: 409, text: async () => JSON.stringify({ error: '版本冲突' }) }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ...server, running: true, ruleCount: 1, rules: [{ ...submitted, id: 'saved', path: '/api/a b', originalResponse: original }] }) }
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify([server]) }
+    } }, { expose() {}, emit(event, value) { if (event === 'notice') notice = value } })
+    assert.equal(vm.canLeave(), false)
+    vm.setDetail(server); vm.applyRecording()
+    assert.equal(vm.dirty.value, true); await vm.saveRule()
+    assert.equal(vm.ruleId.value, ''); assert.equal(vm.draft.value.name, 'Recorded'); assert.match(vm.error.value, /版本冲突/); assert.equal(notice, '')
+    fail = false; await vm.saveRule()
+    assert.equal(submitted.path, '/api/a%20b'); assert.equal(vm.ruleId.value, 'saved'); assert.equal(vm.draft.value.path, '/api/a b')
+    assert.equal(vm.dirty.value, false); assert.match(notice, /立即生效/)
+    vm.changeBody({ target: { value: '{"edited":true}' } }); assert.equal(vm.dirty.value, true)
+    assert.equal(vm.draft.value.response.body, '{"edited":true}'); assert.equal(vm.draft.value.response.bodyBase64, null)
+    vm.editRule({ ...source, id: 'another', originalResponse: original }); assert.equal(vm.ruleId.value, 'saved')
+  } finally { globalThis.window = oldWindow; globalThis.confirm = oldConfirm }
+})
 
 test('nested Postman folders preserve auth inheritance and multipart fields', () => {
   const imported = parseImport({ info: { name: 'Imported' }, item: [{ name: 'Parent', auth: { type: 'bearer', bearer: [{ key: 'token', value: '{{token}}' }] }, item: [{ name: 'Child', item: [{ name: 'Upload', request: { method: 'POST', url: 'https://example.test', body: { mode: 'formdata', formdata: [{ key: 'name', value: 'value' }, { key: 'upload', type: 'file', src: '/private/file.txt' }] } } }] }] }] })

@@ -27,7 +27,8 @@ public sealed record RequestTrace(string Url, string Method, string HttpVersion,
     string RequestBody, List<TraceStage> Stages, string OriginalUrl = "");
 public sealed record ExecuteResult(int Status, string StatusText, long DurationMs, long Size, string ContentType,
     Dictionary<string, string> Headers, string Body, bool Truncated,
-    List<CookieInfo> Cookies, RequestTrace Trace, string? BodyBase64 = null, string FileName = "response.bin", HistoryEntry? History = null);
+    List<CookieInfo> Cookies, RequestTrace Trace, string? BodyBase64 = null, string FileName = "response.bin", HistoryEntry? History = null,
+    string? RecordedBodyBase64 = null);
 public sealed record RegisterInput(string Email, string Password, string ConfirmPassword);
 public sealed record LoginInput(string Email, string Password);
 public sealed record UserInfo(string Id, string Email);

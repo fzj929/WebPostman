@@ -60,3 +60,29 @@ public sealed class DataImportEntity
 {
     public string Id { get; set; } = "";
 }
+
+public sealed class MockServerEntity
+{
+    public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public int Port { get; set; }
+    public string CorsJson { get; set; } = "[]";
+    public long Revision { get; set; }
+}
+
+public sealed class MockRuleEntity
+{
+    public string Id { get; set; } = "";
+    public string ServerId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Method { get; set; } = "GET";
+    public string Path { get; set; } = "/";
+    public string Query { get; set; } = "";
+    public string RouteKey { get; set; } = "";
+    public bool Enabled { get; set; }
+    public string ResponseJson { get; set; } = "";
+    public string OriginalJson { get; set; } = "";
+    public string SourceUrl { get; set; } = "";
+    public long Revision { get; set; }
+}

@@ -19,6 +19,36 @@
 
 默认 SQLite 模式下，账户、会话、分享、个人集合、环境和历史统一位于 `App_Data/accounts.db`，通过用户 ID 隔离；旧版 `users/<用户ID>/workspace.db` 在该用户首次访问工作区时导入。升级前的匿名服务端 `workspace.db` 保留原样，不会分配给任意注册用户；请先在旧版导出，再登录目标账户导入。备份服务端时应备份整个 `App_Data`。
 
+## 真实响应录制与可编辑回放
+
+1. 登录账户，手动发送一次真实 HTTP 请求。
+2. 在响应区点击 **创建模拟接口**，自动录制该次实际执行的方法、路径、状态码、响应头及正文；不会使用随后尚未发送的请求草稿。
+3. 在左侧 **模拟** 标签选择已有服务，或填写名称、监听端口、允许跨域来源，创建新服务。同一服务可保存多个接口。
+4. 检查录制内容，点击 **保存接口**，再点击 **启动服务**。将前端 API 基础地址切换为页面显示的 `http://服务器IP:端口`，路径保持不变。
+5. 可编辑方法、路径、查询条件、状态码、响应头、正文及延迟；运行中保存后，下一次请求立即生效。**恢复原始响应** 会加载录制时的快照，保存后恢复回放。
+
+例如真实请求为 `GET https://backend.example.com/api/products`，指定模拟端口 `8088`，则模拟地址为 `http://服务器IP:8088/api/products`。页面“访问主机”默认使用当前访问 WebPostman 的主机名，可改成服务器的局域网 IP。服务监听服务器所有 IP；需要在防火墙、云安全组或容器中开放/映射该端口。HTTPS 前端需要通过 HTTPS 反向代理访问模拟端口，以避免浏览器混合内容限制。
+
+模拟管理接口位于 `/api/mocks`，必须登录且仅限服务所属账户；模拟端口本身是供联调用的公开 HTTP 服务，不暴露管理接口，也不会向真实接口转发。启动前检查响应中的私密数据。登出不会停止已经启动的服务，需要在页面手动停止；停止或删除服务会释放端口。进程重启后保留所有配置和快照，但服务默认停止，需重新手动启动。多实例部署时，端口运行状态及调用记录属于当前应用进程，应让模拟管理操作固定访问同一个实例。
+
+匹配规则为 **HTTP 方法 + 路径**；查询条件留空时忽略查询参数，填写后精确匹配参数及其值，忽略参数顺序，优先选择带查询条件的匹配规则。同一组方法、路径和查询条件不可重复创建。未知/停用接口返回 404，不回源；HEAD 可复用 GET 的响应头并省略正文。支持 OPTIONS 跨域预检；跨域来源为每行一个 `http(s)://主机:端口`，`*` 表示任意来源，留空关闭跨域，不启用浏览器凭据。跨域只是浏览器访问设置，不是模拟端口的访问认证。
+
+单个响应上限 2 MB，被截断的真实响应不能直接录制。未修改的正文保留解压后的原始字节和 Content-Type，支持二进制和非 UTF-8 文本；文本编辑后按 UTF-8 回放，二进制可编辑 Base64。压缩、长度、连接、Cookie、跨域等响应头不原样重放，避免解压后头部不匹配或重复播放真实会话 Cookie。原始快照和编辑版独立保存，修改不会影响真实接口。
+
+每个账户最多 20 个服务、每个服务最多 200 个接口，响应快照合计最多 32 MB；每个端口最多并发处理 64 个请求，超出返回 429。延迟范围为 0～30000 毫秒。默认端口范围 1024～65535，全实例最多运行 16 个模拟服务，可配置：
+
+```json
+{
+  "Mock": {
+    "MinPort": 1024,
+    "MaxPort": 65535,
+    "MaxRunningServers": 16
+  }
+}
+```
+
+最近调用仅保留当前运行期间的 50 条时间、方法、路径、状态码和耗时，不记录查询字符串、请求头或正文。模拟配置通过 EF Core 存入当前 SQLite/MySQL 数据库，新增表使用版本化 Migration 升级；旧账户、工作区和分享保持兼容。普通工作区的导入/导出不包含模拟服务，备份请使用完整数据库备份。
+
 ## 下载即用（Windows / Linux x64）
 
 从 [Releases](https://github.com/fzj929/WebPostman/releases) 下载 `WebPostman-v版本号-win-x64.zip`，完整解压到可写目录后，双击 `Start-WebPostman.cmd`，访问 `http://127.0.0.1:5078`。便携包已包含前端页面及 .NET 运行时，无需安装 Node.js、SDK 或 .NET。保持命令窗口打开，按 Ctrl+C 停止。
@@ -109,7 +139,7 @@ MySQL 默认不扫描本地旧数据库。若要从 **v1.2 及更早版本** 升
 
 ```powershell
 $env:WEBPOSTMAN_TEST_MYSQL_CONNECTION='Server=127.0.0.1;Port=3306;Database=webpostman_test_local;User=测试账号;Password=测试密码;'
-node --test tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs
+node --test tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs tests/mocks.test.mjs
 ```
 
 测试只接受 `webpostman_test` 开头的库名，并为每组测试添加 `_api`、`_accounts`、`_storage` 后缀；请使用空的可丢弃测试库，运行后自行删除这些测试库，重复运行前也需重新准备空库。SQLite 测试不需要此环境变量，自动使用临时目录。新增存储测试覆盖旧账号/会话/分享导入、大小写 ID、并发写入冲突、事务回滚与重启持久化。
@@ -208,7 +238,7 @@ EF Core 启动时通过版本化 Migration 创建/升级 `wp_` 前缀的数据�
 ```powershell
 npm --prefix WebPostman.Web run build
 dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
-node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs
+node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs tests/mocks.test.mjs
 ```
 
 测试使用独立端口和临时 SQLite 数据库，需要 Node.js 22、.NET 8 SDK 和 Python 3（生成旧库迁移测试数据）。`Regression checks` 在提交到 main 或创建 PR 时自动在 Windows / Linux 上执行 SQLite 回归，并在独立 MySQL 8.0 服务上执行全部后台回归。发布工作流继续对两个平台的便携包执行启动检查。

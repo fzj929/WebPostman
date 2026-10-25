@@ -26,6 +26,9 @@ builder.Services.AddSingleton<LegacyDataImporter>();
 builder.Services.AddSingleton<AccountStore>();
 builder.Services.AddScoped<RequestExecutionService>();
 builder.Services.AddSingleton<ShareStore>();
+builder.Services.AddSingleton<MockRuntime>();
+builder.Services.AddHostedService(services => services.GetRequiredService<MockRuntime>());
+builder.Services.AddSingleton<MockServerService>();
 builder.Services.AddAuthentication("session").AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>("session", null);
 builder.Services.AddAuthorization();
 builder.Services.AddRateLimiter(options =>

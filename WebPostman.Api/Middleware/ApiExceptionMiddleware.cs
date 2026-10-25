@@ -5,6 +5,8 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next)
     public async Task InvokeAsync(HttpContext context)
     {
         try { await next(context); }
+        catch (MockConflictException ex)
+        { context.Response.StatusCode = 409; await context.Response.WriteAsJsonAsync(new { error = ex.Message }); }
         catch (RevisionConflictException)
         { context.Response.StatusCode = 409; await context.Response.WriteAsJsonAsync(new { error = "工作区已被其他页面修改。请导出未保存数据，再重新载入最新工作区。" }); }
         catch (ArgumentException ex)

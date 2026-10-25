@@ -12,6 +12,8 @@ public sealed class WebPostmanDbContext(DbContextOptions<WebPostmanDbContext> op
     public DbSet<EnvironmentEntity> Environments => Set<EnvironmentEntity>();
     public DbSet<HistoryEntity> History => Set<HistoryEntity>();
     public DbSet<DataImportEntity> DataImports => Set<DataImportEntity>();
+    public DbSet<MockServerEntity> MockServers => Set<MockServerEntity>();
+    public DbSet<MockRuleEntity> MockRules => Set<MockRuleEntity>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -62,5 +64,22 @@ public sealed class WebPostmanDbContext(DbContextOptions<WebPostmanDbContext> op
 
         var import = model.Entity<DataImportEntity>();
         import.ToTable("wp_data_imports"); import.HasKey(x => x.Id); import.Property(x => x.Id).HasMaxLength(100);
+
+        var mock = model.Entity<MockServerEntity>();
+        mock.ToTable("wp_mock_servers"); mock.HasKey(x => x.Id);
+        mock.Property(x => x.Id).HasMaxLength(32); mock.Property(x => x.UserId).HasMaxLength(32);
+        mock.Property(x => x.Name).HasMaxLength(100); mock.Property(x => x.Revision).IsConcurrencyToken();
+        mock.HasIndex(x => x.UserId);
+        mock.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+
+        var rule = model.Entity<MockRuleEntity>();
+        rule.ToTable("wp_mock_rules"); rule.HasKey(x => x.Id);
+        rule.Property(x => x.Id).HasMaxLength(32); rule.Property(x => x.ServerId).HasMaxLength(32);
+        rule.Property(x => x.Name).HasMaxLength(100); rule.Property(x => x.Method).HasMaxLength(16);
+        rule.Property(x => x.Path).HasMaxLength(2048); rule.Property(x => x.Query).HasMaxLength(8192);
+        rule.Property(x => x.RouteKey).HasMaxLength(64); rule.Property(x => x.SourceUrl);
+        rule.Property(x => x.Revision).IsConcurrencyToken();
+        rule.HasIndex(x => new { x.ServerId, x.RouteKey }).IsUnique();
+        rule.HasOne<MockServerEntity>().WithMany().HasForeignKey(x => x.ServerId).OnDelete(DeleteBehavior.Cascade);
     }
 }

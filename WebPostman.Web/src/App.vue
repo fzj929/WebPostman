@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import MockWorkspace from './components/MockWorkspace.vue'
+import { recordMock } from './mock-utils'
+import type { MockRuleDraft } from './mock-utils'
 import type { Auth, Collection, Environment, ExecuteResult, Folder, History, RequestItem, Row, Workspace, UploadFile, UserInfo, ShareSummary, SharedItem } from './types'
 import { newAuth, newRequest, newRow, uid } from './types'
 import { curlCommand, folderPath, parseImport, resolveAuth, workspaceChanges } from './workspace-utils'
@@ -13,8 +16,20 @@ const draft = ref<RequestItem>(newRequest())
 const activeTab = ref<'params' | 'auth' | 'headers' | 'cookies' | 'body'>('params')
 const openHeaderPickerId = ref('')
 const responseTab = ref<'body' | 'headers' | 'cookies' | 'trace'>('body')
-const sidebarTab = ref<'collections' | 'history' | 'shares'>('collections')
+const sidebarTab = ref<'collections' | 'history' | 'shares' | 'mocks'>('collections')
 const sidebarCollapsed = ref(false)
+const mockWorkspace = ref<{ canLeave: () => boolean; hasUnsaved: () => boolean } | null>(null)
+const mockRecording = ref<MockRuleDraft | null>(null)
+function switchSidebar(value: typeof sidebarTab.value) {
+  if (sidebarTab.value === 'mocks' && value !== 'mocks' && mockWorkspace.value?.canLeave() === false) return
+  sidebarTab.value = value
+}
+function prepareMock() {
+  if (!response.value) return
+  if (!currentUser.value) { flash('请先登录，再从响应区创建模拟接口'); openAuth(); return }
+  try { mockRecording.value = recordMock(copy(response.value)); sidebarTab.value = 'mocks' }
+  catch (ex) { error.value = ex instanceof Error ? ex.message : '无法录制响应' }
+}
 const folderCreationCollectionId = ref('')
 const newFolderName = ref('')
 const activeEnvironmentId = ref('')
@@ -240,7 +255,7 @@ async function loadWorkspace() {
     } else loaded = await readGuestWorkspace()
     if (generation !== storageGeneration) return
     workspace.value = loaded; savedWorkspace.value = copy(loaded); conflict.value = false; sessionChanged.value = false; saveError.value = ''
-    activeEnvironmentId.value = ''; showEnvironments.value = false; shareDetail.value = null; detailGeneration++
+    activeEnvironmentId.value = ''; showEnvironments.value = false; shareDetail.value = null; detailGeneration++; mockRecording.value = null
     const collection = loaded.collections[0]
     if (collection?.requests[0]) openRequest(collection, collection.requests[0]); else addEditor(newRequest(), collection?.id ?? '')
     await loadHistory()
@@ -248,6 +263,7 @@ async function loadWorkspace() {
   } finally { workspaceLoading.value = false }
 }
 async function reloadWorkspace() {
+  if (sidebarTab.value === 'mocks' && mockWorkspace.value?.canLeave() === false) return
   if ((workspaceDirty.value || editorTabs.value.some(tabDirty)) && !confirm('重新载入会丢弃未保存修改。请先导出备份，是否继续？')) return
   try {
     await saveQueue
@@ -260,6 +276,7 @@ async function reloadWorkspace() {
   } finally { workspaceLoading.value = false }
 }
 async function preserveDraftsBeforeSwitch() {
+  if (sidebarTab.value === 'mocks' && mockWorkspace.value?.canLeave() === false) throw new Error('已取消账户切换，模拟草稿仍保留')
   await saveQueue; stashEditor()
   for (const tab of editorTabs.value.filter(tabDirty)) {
     let collection = workspace.value.collections.find(x => x.id === tab.collectionId)
@@ -323,7 +340,7 @@ async function loadShares(append = false) {
   } catch (ex) { sharesError.value = ex instanceof Error ? ex.message : '加载分享失败' }
   finally { if (generation === sharesGeneration) sharesBusy.value = false }
 }
-function openShares() { sidebarTab.value = 'shares'; void loadShares() }
+function openShares() { switchSidebar('shares'); if (sidebarTab.value === 'shares') void loadShares() }
 async function viewShare(item: Pick<ShareSummary, 'id'>) {
   const generation = ++detailGeneration
   sharesError.value = ''
@@ -598,12 +615,12 @@ async function importFile(event: Event) {
   input.value = ''
 }
 function beforeUnload(event: BeforeUnloadEvent) {
-  if (workspaceDirty.value || saving.value || editorTabs.value.some(tabDirty)) { event.preventDefault(); event.returnValue = '' }
+  if (workspaceDirty.value || saving.value || editorTabs.value.some(tabDirty) || (sidebarTab.value === 'mocks' && mockWorkspace.value?.hasUnsaved())) { event.preventDefault(); event.returnValue = '' }
 }
 function keyboard(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
-    if (showAuth.value || showShare.value || sidebarTab.value === 'shares') return
+    if (showAuth.value || showShare.value || (sidebarTab.value === 'shares' || sidebarTab.value === 'mocks')) return
     if (!showEnvironments.value) void saveRequest(); else void persist()
   }
 }
@@ -633,9 +650,9 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
     <div v-if="workspaceLoading" class="storage-notice" role="status">正在载入工作区…</div>
     <div class="workspace-layout" :inert="workspaceLoading" :class="{ 'sidebar-is-collapsed': sidebarCollapsed }">
       <aside class="sidebar">
-        <div class="sidebar-head"><span class="eyebrow">WORKSPACE</span><button class="icon-button" title="新建集合" aria-label="新建集合" @click="createCollection"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" /></svg></button></div>
-        <div class="sidebar-tabs"><button :class="{ active: sidebarTab === 'collections' }" @click="sidebarTab = 'collections'">集合</button><button :class="{ active: sidebarTab === 'history' }" @click="sidebarTab = 'history'">历史</button><button :class="{ active: sidebarTab === 'shares' }" @click="openShares">分享</button></div>
-        <div v-if="sidebarTab !== 'shares'" class="sidebar-search"><input v-model="search" aria-label="搜索集合或请求" placeholder="搜索名称、URL、方法…" /></div>
+        <div class="sidebar-head"><span class="eyebrow">WORKSPACE</span><button v-if="sidebarTab !== 'mocks'" class="icon-button" title="新建集合" aria-label="新建集合" @click="createCollection"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" /></svg></button></div>
+        <div class="sidebar-tabs"><button :class="{ active: sidebarTab === 'collections' }" @click="switchSidebar('collections')">集合</button><button :class="{ active: sidebarTab === 'history' }" @click="switchSidebar('history')">历史</button><button :class="{ active: sidebarTab === 'shares' }" @click="openShares">分享</button><button :class="{ active: sidebarTab === 'mocks' }" @click="switchSidebar('mocks')">模拟</button></div>
+        <div v-if="sidebarTab === 'collections' || sidebarTab === 'history'" class="sidebar-search"><input v-model="search" aria-label="搜索集合或请求" placeholder="搜索名称、URL、方法…" /></div>
         <div v-if="sidebarTab === 'collections'" class="sidebar-scroll">
           <div v-if="!workspace.collections.length" class="empty-sidebar">还没有集合。<button @click="createCollection">创建第一个集合 →</button></div>
           <div v-for="collection in workspace.collections.filter(matchesCollection)" :key="collection.id" class="collection-block">
@@ -662,10 +679,12 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
           <p v-if="!shares.length && !sharesBusy" class="empty-sidebar">还没有匹配的分享。登录后可分享请求或集合。</p>
           <div class="share-list"><button v-for="item in shares" :key="item.id" class="share-list-item" :class="{ selected: shareDetail?.id === item.id }" @click="viewShare(item)"><span class="share-kind">{{ item.kind === 'request' ? '请求' : '集合' }} · {{ item.requestCount }} 个请求</span><strong>{{ item.title }}</strong><small>{{ item.author }}</small></button><button v-if="shares.length < shareTotal" class="add-row" @click="loadShares(true)" :disabled="sharesBusy">加载更多分享</button><p v-if="sharesBusy" class="muted">正在加载…</p></div>
         </div>
+        <div v-if="sidebarTab === 'mocks'" id="mock-sidebar"></div>
         <div class="sidebar-footer"><span class="footer-dot"></span> {{ currentUser ? '个人账户保存' : '浏览器 IndexedDB' }} <span class="save-state">{{ saving ? '保存中…' : saveError ? '保存需处理' : workspaceDirty || dirty ? '有未保存修改' : '已保存' }}</span></div>
       </aside>
 
-      <main v-if="sidebarTab === 'shares'" class="main-panel share-panel">
+      <MockWorkspace v-if="sidebarTab === 'mocks'" :key="currentUser?.id ?? 'guest'" ref="mockWorkspace" :user="currentUser" :recording="mockRecording" :request="accountFetch" @login="openAuth" @consumed="mockRecording = null" @notice="flash" />
+      <main v-else-if="sidebarTab === 'shares'" class="main-panel share-panel">
         <div class="share-panel-heading"><div><span class="eyebrow">COMMUNITY</span><h1>分享大厅</h1><p>登录或游客均可浏览，保存副本后可以独立修改。</p></div><button class="outline-button" @click="loadShares()">刷新分享</button></div>
         <div v-if="shareDetail" class="shared-detail">
           <div class="share-title-row"><div><span class="share-kind">{{ shareDetail.kind === 'request' ? '请求分享' : '集合分享' }}</span><h2>{{ shareDetail.title }}</h2><p>{{ shareDetail.author }} · {{ new Date(shareDetail.createdAt).toLocaleString() }}</p></div><div class="share-title-actions"><button class="outline-button" @click="copyShareLink">复制分享链接</button><button v-if="shareDetail.ownerId === currentUser?.id" class="subtle-button" @click="withdrawShare(shareDetail)">撤回分享</button></div></div>
@@ -722,7 +741,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
           <div v-if="error" class="error-banner">{{ error }}</div>
           <div v-if="response" class="response-card">
             <div class="response-tabs"><button :class="{ active: responseTab === 'body' }" @click="responseTab = 'body'">Body</button><button :class="{ active: responseTab === 'headers' }" @click="responseTab = 'headers'">Headers <span>{{ Object.keys(response.headers).length }}</span></button><button :class="{ active: responseTab === 'cookies' }" @click="responseTab = 'cookies'">Cookies <span>{{ response.cookies.length }}</span></button><button :class="{ active: responseTab === 'trace' }" @click="responseTab = 'trace'">请求诊断</button><span class="content-type">{{ response.contentType || 'text/plain' }}</span></div>
-            <div class="response-tools"><input v-model="responseSearch" aria-label="搜索响应正文" placeholder="搜索响应正文…" /><span v-if="responseSearch">{{ responseMatchCount >= 1000 ? '1000+' : responseMatchCount }} 处匹配</span><button class="outline-button" @click="downloadResponse">{{ response.truncated ? '下载已截取内容' : '下载响应' }}</button></div>
+            <div class="response-tools"><input v-model="responseSearch" aria-label="搜索响应正文" placeholder="搜索响应正文…" /><span v-if="responseSearch">{{ responseMatchCount >= 1000 ? '1000+' : responseMatchCount }} 处匹配</span><button class="outline-button" @click="downloadResponse">{{ response.truncated ? '下载已截取内容' : '下载响应' }}</button><button class="outline-button mock-record-button" @click="prepareMock" :disabled="response.truncated" :title="response.truncated ? '响应已截断，无法录制完整回放' : '将此次真实响应保存为可编辑的模拟接口'">创建模拟接口</button></div>
             <pre v-if="responseTab === 'body'" class="response-body"><template v-for="(piece, index) in responsePieces" :key="index"><mark v-if="piece.match">{{ piece.text }}</mark><template v-else>{{ piece.text }}</template></template></pre>
             <div v-else-if="responseTab === 'headers'" class="response-headers"><div v-for="(value, key) in response.headers" :key="key"><strong>{{ key }}</strong><span>{{ value }}</span></div></div>
             <div v-else-if="responseTab === 'cookies'" class="response-cookies"><p v-if="!response.cookies.length" class="muted">响应中没有 Set-Cookie。请求 Cookie 可在上方 Cookies 标签设置。</p><div v-for="(cookie, index) in response.cookies" :key="index" class="cookie-card"><strong>{{ cookie.name }}</strong><span>{{ cookie.value }}</span><small>{{ cookie.attributes || '无附加属性' }}</small></div></div>

@@ -31,7 +31,7 @@ jobs:
       - run: npm run build
         working-directory: WebPostman.Web
       - run: dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
-      - run: node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs
+      - run: node --test tests/frontend.test.mjs tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs tests/mocks.test.mjs
 
   mysql:
     runs-on: ubuntu-22.04
@@ -63,4 +63,4 @@ jobs:
         with:
           python-version: '3.13'
       - run: dotnet build WebPostman.Api/WebPostman.Api.csproj -c Release
-      - run: node --test tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs
+      - run: node --test tests/api.test.mjs tests/accounts.test.mjs tests/storage.test.mjs tests/mocks.test.mjs

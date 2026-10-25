@@ -144,7 +144,7 @@ public sealed class RequestExecutor(IHttpClientFactory factory)
         return new ExecuteResult((int)response.StatusCode, response.ReasonPhrase ?? "", overall.ElapsedMilliseconds,
             response.Content.Headers.ContentLength ?? bytes.LongLength, response.Content.Headers.ContentType?.MediaType ?? "",
             headers, binary ? "[二进制响应，请下载查看]" : encoding.GetString(bytes), truncated, responseCookies, trace,
-            binary ? Convert.ToBase64String(bytes) : null, Path.GetFileName(response.Content.Headers.ContentDisposition?.FileNameStar ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"') ?? (binary ? "response.bin" : "response.txt")));
+            binary ? Convert.ToBase64String(bytes) : null, Path.GetFileName(response.Content.Headers.ContentDisposition?.FileNameStar ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"') ?? (binary ? "response.bin" : "response.txt")), RecordedBodyBase64: Convert.ToBase64String(bytes));
     }
 
     private static async Task<HttpResponseMessage> SendAsync(HttpClient client, HttpRequestMessage original, bool follow, string authKey, CancellationToken token)
