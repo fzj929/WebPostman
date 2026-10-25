@@ -2,7 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import MockWorkspace from './components/MockWorkspace.vue'
 import { recordMock } from './mock-utils'
-import type { MockRuleDraft } from './mock-utils'
+import type { MockRuleDraft, MockServer } from './mock-utils'
 import type { Auth, Collection, Environment, ExecuteResult, Folder, History, RequestItem, Row, Workspace, UploadFile, UserInfo, ShareSummary, SharedItem } from './types'
 import { newAuth, newRequest, newRow, uid } from './types'
 import { curlCommand, folderPath, parseImport, resolveAuth, workspaceChanges } from './workspace-utils'
@@ -20,15 +20,56 @@ const sidebarTab = ref<'collections' | 'history' | 'shares' | 'mocks'>('collecti
 const sidebarCollapsed = ref(false)
 const mockWorkspace = ref<{ canLeave: () => boolean; hasUnsaved: () => boolean } | null>(null)
 const mockRecording = ref<MockRuleDraft | null>(null)
+const mockTargetServerId = ref('')
+const showMockDestination = ref(false)
+const mockDestinationMode = ref<'' | 'new' | 'existing'>('')
+const mockDestinationId = ref('')
+const mockDestinationServers = ref<MockServer[]>([])
+const mockDestinationLoading = ref(false)
+const mockDestinationError = ref('')
+const pendingMockRecording = ref<MockRuleDraft | null>(null)
+let mockDestinationOwner = ''
+let mockDestinationGeneration = 0
 function switchSidebar(value: typeof sidebarTab.value) {
   if (sidebarTab.value === 'mocks' && value !== 'mocks' && mockWorkspace.value?.canLeave() === false) return
   sidebarTab.value = value
 }
-function prepareMock() {
+async function prepareMock() {
   if (!response.value) return
   if (!currentUser.value) { flash('请先登录，再从响应区创建模拟接口'); openAuth(); return }
-  try { mockRecording.value = recordMock(copy(response.value)); sidebarTab.value = 'mocks' }
+  try {
+    pendingMockRecording.value = recordMock(copy(response.value))
+    mockDestinationOwner = storageOwner(); mockDestinationMode.value = ''; mockDestinationId.value = ''
+    mockDestinationServers.value = []; showMockDestination.value = true
+    await loadMockDestinations()
+  }
   catch (ex) { error.value = ex instanceof Error ? ex.message : '无法录制响应' }
+}
+async function loadMockDestinations() {
+  const generation = ++mockDestinationGeneration
+  mockDestinationLoading.value = true; mockDestinationError.value = ''
+  try {
+    const result = await accountFetch('/api/mocks', {}, mockDestinationOwner)
+    const data = await result.json()
+    if (generation !== mockDestinationGeneration || !showMockDestination.value) return
+    if (mockDestinationOwner !== storageOwner()) throw new Error('账户已切换，请关闭窗口后重新创建模拟接口')
+    if (!result.ok) throw new Error(data.error ?? '无法加载已有模拟服务')
+    mockDestinationServers.value = data
+  } catch (ex) {
+    if (generation === mockDestinationGeneration && showMockDestination.value) mockDestinationError.value = ex instanceof Error ? ex.message : '无法加载已有模拟服务'
+  } finally { if (generation === mockDestinationGeneration) mockDestinationLoading.value = false }
+}
+function cancelMockDestination() {
+  showMockDestination.value = false; pendingMockRecording.value = null
+  mockDestinationGeneration++; mockDestinationLoading.value = false
+}
+function confirmMockDestination() {
+  if (!pendingMockRecording.value || !mockDestinationMode.value) return
+  if (mockDestinationOwner !== storageOwner()) { mockDestinationError.value = '账户已切换，请关闭窗口后重新创建模拟接口'; return }
+  if (mockDestinationMode.value === 'existing' && (mockDestinationLoading.value || !mockDestinationServers.value.some(x => x.id === mockDestinationId.value))) return
+  mockRecording.value = copy(pendingMockRecording.value)
+  mockTargetServerId.value = mockDestinationMode.value === 'existing' ? mockDestinationId.value : ''
+  cancelMockDestination(); sidebarTab.value = 'mocks'
 }
 const folderCreationCollectionId = ref('')
 const newFolderName = ref('')
@@ -255,7 +296,7 @@ async function loadWorkspace() {
     } else loaded = await readGuestWorkspace()
     if (generation !== storageGeneration) return
     workspace.value = loaded; savedWorkspace.value = copy(loaded); conflict.value = false; sessionChanged.value = false; saveError.value = ''
-    activeEnvironmentId.value = ''; showEnvironments.value = false; shareDetail.value = null; detailGeneration++; mockRecording.value = null
+    activeEnvironmentId.value = ''; showEnvironments.value = false; shareDetail.value = null; detailGeneration++; mockRecording.value = null; cancelMockDestination()
     const collection = loaded.collections[0]
     if (collection?.requests[0]) openRequest(collection, collection.requests[0]); else addEditor(newRequest(), collection?.id ?? '')
     await loadHistory()
@@ -620,7 +661,7 @@ function beforeUnload(event: BeforeUnloadEvent) {
 function keyboard(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
-    if (showAuth.value || showShare.value || (sidebarTab.value === 'shares' || sidebarTab.value === 'mocks')) return
+    if (showAuth.value || showShare.value || showMockDestination.value || (sidebarTab.value === 'shares' || sidebarTab.value === 'mocks')) return
     if (!showEnvironments.value) void saveRequest(); else void persist()
   }
 }
@@ -683,7 +724,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
         <div class="sidebar-footer"><span class="footer-dot"></span> {{ currentUser ? '个人账户保存' : '浏览器 IndexedDB' }} <span class="save-state">{{ saving ? '保存中…' : saveError ? '保存需处理' : workspaceDirty || dirty ? '有未保存修改' : '已保存' }}</span></div>
       </aside>
 
-      <MockWorkspace v-if="sidebarTab === 'mocks'" :key="currentUser?.id ?? 'guest'" ref="mockWorkspace" :user="currentUser" :recording="mockRecording" :request="accountFetch" @login="openAuth" @consumed="mockRecording = null" @notice="flash" />
+      <MockWorkspace v-if="sidebarTab === 'mocks'" :key="currentUser?.id ?? 'guest'" ref="mockWorkspace" :user="currentUser" :recording="mockRecording" :target-server-id="mockTargetServerId" :request="accountFetch" @login="openAuth" @consumed="mockRecording = null" @notice="flash" />
       <main v-else-if="sidebarTab === 'shares'" class="main-panel share-panel">
         <div class="share-panel-heading"><div><span class="eyebrow">COMMUNITY</span><h1>分享大厅</h1><p>登录或游客均可浏览，保存副本后可以独立修改。</p></div><button class="outline-button" @click="loadShares()">刷新分享</button></div>
         <div v-if="shareDetail" class="shared-detail">
@@ -753,6 +794,22 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); window.
       </main>
     </div>
 
+    <div v-if="showMockDestination" class="modal-backdrop account-backdrop" @click.self="cancelMockDestination" @keydown.esc.stop.prevent="cancelMockDestination">
+      <form class="mock-destination-modal" role="dialog" aria-modal="true" aria-label="选择模拟接口保存位置" @submit.prevent="confirmMockDestination">
+        <div class="modal-head"><h2>将响应添加到哪里？</h2><button type="button" class="close-button" aria-label="关闭模拟服务选择" @click="cancelMockDestination">×</button></div>
+        <p>选择新建服务，或将本次响应添加到已有服务。确认后可检查、编辑并保存接口。</p>
+        <div v-if="pendingMockRecording" class="mock-destination-source"><span class="method-mini">{{ pendingMockRecording.method }}</span><code>{{ pendingMockRecording.path }}</code><small>响应 {{ pendingMockRecording.response.status }}</small></div>
+        <fieldset class="mock-destination-options"><legend>保存方式</legend>
+          <label class="mock-destination-option" :class="{ chosen: mockDestinationMode === 'new' }"><input v-model="mockDestinationMode" type="radio" value="new" name="mock-destination" aria-label="新建模拟服务" /><span><strong>新建模拟服务</strong><small>设置一个新的名称和监听端口，再保存接口。</small></span></label>
+          <label class="mock-destination-option" :class="{ chosen: mockDestinationMode === 'existing' }"><input v-model="mockDestinationMode" type="radio" value="existing" name="mock-destination" aria-label="添加到已有服务" :disabled="mockDestinationLoading || !mockDestinationServers.length || !!mockDestinationError" /><span><strong>添加到已有服务</strong><small>复用已有服务的端口，保留其中的其他接口。</small></span></label>
+        </fieldset>
+        <p v-if="mockDestinationLoading" class="muted" role="status">正在加载已有服务…</p>
+        <p v-else-if="!mockDestinationServers.length && !mockDestinationError" class="mock-destination-hint">当前还没有模拟服务，请选择“新建模拟服务”。</p>
+        <label v-if="mockDestinationMode === 'existing'" class="mock-destination-select">目标模拟服务<select v-model="mockDestinationId" aria-label="选择已有模拟服务" :disabled="mockDestinationLoading"><option value="" disabled>请选择一个已有服务</option><option v-for="server in mockDestinationServers" :key="server.id" :value="server.id">{{ server.name }} · :{{ server.port }} · {{ server.running ? '运行中' : '已停止' }} · {{ server.ruleCount }} 个接口</option></select></label>
+        <div v-if="mockDestinationError" class="error-banner" role="alert">{{ mockDestinationError }} <button type="button" class="subtle-button" @click="loadMockDestinations" :disabled="mockDestinationLoading">重新加载服务</button></div>
+        <div class="modal-actions"><button type="button" class="outline-button" @click="cancelMockDestination">取消</button><button type="submit" class="send-button" :disabled="!mockDestinationMode || (mockDestinationMode === 'existing' && (mockDestinationLoading || !mockDestinationId || !!mockDestinationError))">{{ mockDestinationMode === 'new' ? '下一步：设置新服务' : mockDestinationMode === 'existing' ? '添加到所选服务' : '请选择保存方式' }}</button></div>
+      </form>
+    </div>
     <div v-if="showAuth" class="modal-backdrop account-backdrop" @click.self="!authBusy && (showAuth = false)"><form class="account-modal" @submit.prevent="submitAuth" role="dialog" aria-modal="true" :aria-label="authMode === 'login' ? '登录账户' : '注册账户'"><div class="modal-head"><h2>{{ authMode === 'login' ? '登录个人工作区' : '创建 WebPostman 账户' }}</h2><button type="button" class="close-button" @click="showAuth = false" :disabled="authBusy" aria-label="关闭登录窗口">×</button></div><p>游客数据只在本机。登录后可以保存到个人账户、发布分享。</p><div class="account-mode"><button type="button" :class="{ chosen: authMode === 'login' }" @click="authMode = 'login'; authError = ''">登录</button><button type="button" :class="{ chosen: authMode === 'register' }" @click="authMode = 'register'; authError = ''">注册</button></div><label>邮箱<input v-model="authEmail" type="email" autocomplete="username" required maxlength="254" aria-label="账户邮箱" /></label><label>密码<input v-model="authPassword" type="password" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" required minlength="8" maxlength="128" aria-label="账户密码" placeholder="至少 8 个字符" /></label><label v-if="authMode === 'register'">确认密码<input v-model="authConfirmPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="128" aria-label="确认密码" /></label><p v-if="authError" class="error-banner" role="alert">{{ authError }}</p><button class="send-button account-submit" type="submit" :disabled="authBusy">{{ authBusy ? '正在处理…' : authMode === 'login' ? '登录' : '注册并登录' }}</button><small>切换前会将未保存草稿留在原存储中，本机数据不会自动上传。</small></form></div>
     <div v-if="showShare" class="modal-backdrop account-backdrop" @click.self="!shareBusy && (showShare = false)"><div class="share-modal" role="dialog" aria-modal="true" aria-label="发布分享"><div class="modal-head"><h2>发布{{ shareDraft.kind === 'request' ? '请求' : '集合' }}分享</h2><button class="close-button" @click="showShare = false" :disabled="shareBusy" aria-label="关闭分享预览">×</button></div><p>发布后，同一服务上的所有人都能查看并复制。常见认证信息、Cookie、文件内容已移除，非 JSON 原始正文默认不公开；请继续检查 URL 和正文是否含有私密内容。</p><label>分享标题<input v-model="shareDraft.title" maxlength="100" aria-label="分享标题" /></label><label>描述（选填）<textarea v-model="shareDraft.description" maxlength="1000" aria-label="分享描述" /></label><details open><summary>将公开的内容预览</summary><pre>{{ JSON.stringify(sharePreview, null, 2) }}</pre></details><p v-if="shareError" class="error-banner" role="alert">{{ shareError }}</p><div class="modal-actions"><button class="outline-button" @click="showShare = false" :disabled="shareBusy">取消</button><button class="send-button" @click="publishShare" :disabled="shareBusy || !shareDraft.title.trim()">{{ shareBusy ? '发布中…' : '确认公开分享' }}</button></div></div></div>
     <div v-if="showEnvironments" class="modal-backdrop" @click.self="showEnvironments = false"><div class="env-modal"><div class="modal-head"><div><span class="eyebrow">WORKSPACE SETTINGS</span><h2>环境变量</h2></div><button class="close-button" @click="showEnvironments = false">×</button></div><p class="modal-description">在 URL、请求头、正文及验证信息中使用 <code v-pre>{{变量名}}</code>。</p><div class="env-toolbar"><select v-model="activeEnvironmentId"><option value="">不使用环境</option><option v-for="environment in workspace.environments" :key="environment.id" :value="environment.id">{{ environment.name }}</option></select><button class="outline-button" @click="addEnvironment">＋ 新建环境</button></div><template v-if="activeEnvironment"><div class="form-field env-name"><label>环境名称</label><input v-model="activeEnvironment.name" /></div><div class="kv-head"><span>启用</span><span>KEY</span><span>VALUE</span><span></span></div><div v-for="row in activeEnvironment.variables" :key="row.id" class="kv-row"><input v-model="row.enabled" type="checkbox" /><input v-model="row.key" placeholder="base_url" /><input v-model="row.value" type="password" placeholder="变量值" /><button class="remove-row" @click="activeEnvironment!.variables = activeEnvironment!.variables.filter(x => x.id !== row.id)">×</button></div><button class="add-row" @click="activeEnvironment!.variables.push(newRow())">＋ 添加变量</button></template><div class="modal-actions"><button v-if="activeEnvironment" class="subtle-button" @click="workspace.environments = workspace.environments.filter(x => x.id !== activeEnvironmentId); activeEnvironmentId = ''; persist()">删除环境</button><button class="send-button" @click="saveEnvironments" :disabled="saving">保存并关闭</button></div></div></div>

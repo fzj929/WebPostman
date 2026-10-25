@@ -5,7 +5,7 @@ import { newRow } from '../types'
 import { cloneMock, editedMockBody, mockUrl } from '../mock-utils'
 import type { MockCall, MockRule, MockRuleDraft, MockServer } from '../mock-utils'
 
-const props = defineProps<{ user: UserInfo | null; recording: MockRuleDraft | null; request: (url: string, options?: RequestInit) => Promise<Response> }>()
+const props = defineProps<{ user: UserInfo | null; recording: MockRuleDraft | null; targetServerId?: string; request: (url: string, options?: RequestInit) => Promise<Response> }>()
 const emit = defineEmits<{ login: []; consumed: []; notice: [message: string] }>()
 const servers = ref<MockServer[]>([])
 const detail = ref<MockServer | null>(null)
@@ -67,14 +67,15 @@ function applyRecording() {
 }
 async function selectServer(server: MockServer) {
   if (busy.value || !canLeave(false)) return
-  await action(async () => {
-    const value = await api<MockServer>('/' + server.id)
-    draft.value = null; ruleId.value = ''; baseline.value = ''; logs.value = []
-    setDetail(value)
-    if (pendingRecording.value) applyRecording()
-    else if (value.rules?.[0]) editRule(value.rules[0])
-    logs.value = await api<MockCall[]>('/' + server.id + '/logs')
-  })
+  await action(() => loadServer(server.id))
+}
+async function loadServer(id: string) {
+  const value = await api<MockServer>('/' + id)
+  draft.value = null; ruleId.value = ''; baseline.value = ''; logs.value = []
+  setDetail(value)
+  if (pendingRecording.value) applyRecording()
+  else if (value.rules?.[0]) editRule(value.rules[0])
+  logs.value = await api<MockCall[]>('/' + id + '/logs')
 }
 function createServerForm() {
   if (busy.value || !canLeave(false)) return
@@ -155,10 +156,18 @@ async function copyAddress(path = '', query = '') {
   try { await navigator.clipboard.writeText(mockUrl(host.value, detail.value!.port, path, query)); emit('notice', '模拟地址已复制') }
   catch { error.value = '剪贴板不可用，请手动复制显示的地址' }
 }
-onMounted(async () => {
+async function initialize() {
   if (!props.user) return
-  await action(async () => { await list(); if (!servers.value.length) creating.value = true })
-})
+  if (pendingRecording.value && !props.targetServerId) creating.value = true
+  await action(async () => {
+    await list()
+    if (pendingRecording.value && props.targetServerId) {
+      if (!servers.value.some(x => x.id === props.targetServerId)) throw new Error('所选模拟服务已不存在，请从左侧选择其他服务，或新建服务；录制快照仍保留')
+      await loadServer(props.targetServerId)
+    } else if (pendingRecording.value || !servers.value.length) creating.value = true
+  })
+}
+onMounted(initialize)
 </script>
 
 <template>
@@ -179,7 +188,7 @@ onMounted(async () => {
     <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
     <div v-if="!user" class="share-empty"><strong>登录后创建模拟接口</strong><p>真实请求完成后，点击响应区的“创建模拟接口”。</p><button class="send-button" @click="emit('login')">登录 / 注册</button></div>
     <template v-else>
-      <div v-if="pendingRecording" class="mock-recording-note"><strong>响应快照已准备好</strong><span>从左侧选择一个已有服务，或新建服务后保存接口。</span></div>
+      <div v-if="pendingRecording" class="mock-recording-note"><strong>响应快照已准备好</strong><span>{{ creating ? '填写新服务的名称和端口，创建后即可保存这次录制的接口。' : '从左侧选择目标服务，或新建服务后保存接口。' }}</span></div>
       <section v-if="creating || detail" class="mock-service-card">
         <div class="mock-card-title"><h2>{{ creating ? '新建模拟服务' : detail?.name }}</h2><div v-if="detail" class="mock-actions"><span class="mock-state" :class="{ running: detail.running }">{{ detail.running ? '运行中' : '已停止' }}</span><button :class="detail.running ? 'outline-button' : 'send-button'" @click="toggleServer" :disabled="busy">{{ detail.running ? '停止服务' : '启动服务' }}</button><button class="subtle-button" @click="removeServer" :disabled="busy">删除服务</button></div></div>
         <form class="mock-service-form" @submit.prevent="saveServer">

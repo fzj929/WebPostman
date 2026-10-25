@@ -52,15 +52,57 @@ test('truncated responses are refused; binary edits remain Base64 and IPv6 addre
   assert.equal(mockUrl('2001:db8::1', 8088, '/api/a', '?b=2'), 'http://[2001:db8::1]:8088/api/a?b=2')
 })
 
-test('the real request editor records its received response and guards leaving an unsaved mock', () => {
-  const vm = createEditor()
-  vm.draft.value.name = 'Unsent new draft'
-  vm.response.value = { status: 200, body: '{"ok":true}', contentType: 'application/json', headers: {}, trace: { url: 'https://example.test/executed', method: 'GET' }, history: { method: 'POST', request: { name: 'Actually executed' } } }
-  vm.prepareMock(); assert.equal(vm.sidebarTab.value, 'mocks')
-  assert.equal(vm.mockRecording.value.name, 'Actually executed'); assert.equal(vm.mockRecording.value.method, 'POST')
-  vm.mockWorkspace.value = { canLeave: () => false, hasUnsaved: () => true }
-  vm.switchSidebar('collections'); assert.equal(vm.sidebarTab.value, 'mocks')
-  let prevented = false; vm.beforeUnload({ preventDefault() { prevented = true } }); assert.equal(prevented, true)
+test('recording asks for a destination, freezes the received response, and explicitly selects an existing service', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => jsonResponse([{ id: 'chosen-server', name: 'Existing', port: 8088, running: true, ruleCount: 3 }])
+  try {
+    const vm = createEditor()
+    vm.draft.value.name = 'Unsent new draft'
+    vm.response.value = { status: 200, body: '{"ok":true}', contentType: 'application/json', headers: {}, trace: { url: 'https://example.test/executed', method: 'GET' }, history: { method: 'POST', request: { name: 'Actually executed' } } }
+    await vm.prepareMock(); assert.equal(vm.sidebarTab.value, 'collections'); assert.equal(vm.showMockDestination.value, true)
+    assert.equal(vm.mockDestinationMode.value, ''); assert.equal(vm.mockRecording.value, null)
+    assert.equal(vm.pendingMockRecording.value.name, 'Actually executed'); assert.equal(vm.pendingMockRecording.value.method, 'POST')
+    vm.response.value.body = 'A later response'
+    vm.mockDestinationMode.value = 'existing'; vm.confirmMockDestination(); assert.equal(vm.sidebarTab.value, 'collections')
+    vm.mockDestinationId.value = 'chosen-server'; vm.confirmMockDestination()
+    assert.equal(vm.showMockDestination.value, false); assert.equal(vm.sidebarTab.value, 'mocks'); assert.equal(vm.mockTargetServerId.value, 'chosen-server')
+    assert.equal(vm.mockRecording.value.response.body, '{"ok":true}')
+    vm.mockWorkspace.value = { canLeave: () => false, hasUnsaved: () => true }
+    vm.switchSidebar('collections'); assert.equal(vm.sidebarTab.value, 'mocks')
+    let prevented = false; vm.beforeUnload({ preventDefault() { prevented = true } }); assert.equal(prevented, true)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('destination cancellation ignores a late service list and new-service selection never silently reuses an existing service', async () => {
+  const originalFetch = globalThis.fetch
+  let finish, writes = 0
+  globalThis.fetch = async (_url, options) => { if (options.method && options.method !== 'GET') writes++; return new Promise(resolve => { finish = resolve }) }
+  try {
+    const vm = createEditor()
+    vm.response.value = { status: 200, body: '{}', contentType: 'application/json', headers: {}, trace: { url: 'https://example.test/a', method: 'GET' } }
+    const preparing = vm.prepareMock(); vm.cancelMockDestination()
+    finish(jsonResponse([{ id: 'existing', name: 'Existing', port: 8088 }])); await preparing
+    assert.equal(vm.showMockDestination.value, false); assert.equal(vm.sidebarTab.value, 'collections'); assert.equal(vm.pendingMockRecording.value, null)
+    assert.deepEqual(vm.mockDestinationServers.value, [])
+    globalThis.fetch = async () => jsonResponse([{ id: 'existing', name: 'Existing', port: 8088 }])
+    await vm.prepareMock(); vm.mockDestinationMode.value = 'new'; vm.confirmMockDestination()
+    assert.equal(vm.sidebarTab.value, 'mocks'); assert.equal(vm.mockTargetServerId.value, ''); assert.ok(vm.mockRecording.value)
+    assert.equal(writes, 0)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('failed destination loading can retry and an account switch cannot transfer the response to another owner', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    const vm = createEditor()
+    vm.response.value = { status: 200, body: 'private', contentType: 'text/plain', headers: {}, trace: { url: 'https://example.test/a', method: 'GET' } }
+    globalThis.fetch = async () => jsonResponse({ error: '加载失败' }, 500)
+    await vm.prepareMock(); assert.match(vm.mockDestinationError.value, /加载失败/); assert.equal(vm.showMockDestination.value, true)
+    globalThis.fetch = async () => jsonResponse([{ id: 'existing', name: 'Existing', port: 8088 }])
+    await vm.loadMockDestinations(); assert.equal(vm.mockDestinationError.value, ''); assert.equal(vm.mockDestinationServers.value.length, 1)
+    vm.mockDestinationMode.value = 'existing'; vm.mockDestinationId.value = 'existing'; vm.currentUser.value = { id: 'other', email: 'other@example.test' }
+    vm.confirmMockDestination(); assert.equal(vm.sidebarTab.value, 'collections'); assert.equal(vm.mockRecording.value, null); assert.match(vm.mockDestinationError.value, /账户已切换/)
+  } finally { globalThis.fetch = originalFetch }
 })
 
 test('the mock editor keeps failed edits, applies normalized saved data and protects pending recordings', async () => {
@@ -90,6 +132,32 @@ test('the mock editor keeps failed edits, applies normalized saved data and prot
     assert.equal(vm.draft.value.response.body, '{"edited":true}'); assert.equal(vm.draft.value.response.bodyBase64, null)
     vm.editRule({ ...source, id: 'another', originalResponse: original }); assert.equal(vm.ruleId.value, 'saved')
   } finally { globalThis.window = oldWindow; globalThis.confirm = oldConfirm }
+})
+
+test('mock initialization opens the chosen service without editing its existing rules, or opens a new form when requested', async () => {
+  const oldWindow = globalThis.window
+  globalThis.window = { location: { hostname: 'server.example.test' } }
+  const response = { status: 200, contentType: 'application/json', headers: [], body: '{"recorded":true}', bodyBase64: null, binary: false, delayMs: 0 }
+  const source = { name: 'New recording', method: 'GET', path: '/recorded', query: '', enabled: true, response, sourceUrl: '', revision: 0 }
+  const previous = { ...source, id: 'old-rule', name: 'Existing rule', path: '/old', originalResponse: response }
+  const server = { id: 'existing', name: 'Existing service', port: 9000, corsOrigins: ['*'], revision: 4, running: true, ruleCount: 1, calls: 0, rules: [previous] }
+  const calls = [], events = []
+  const request = async (url, options) => {
+    calls.push({ url, method: options.method })
+    return { ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/logs') ? [] : url === '/api/mocks' ? [server] : server) }
+  }
+  try {
+    const vm = MockEditor.setup({ user: { id: 'owner' }, recording: source, targetServerId: 'existing', request }, { expose() {}, emit(event) { events.push(event) } })
+    await vm.initialize()
+    assert.equal(vm.detail.value.id, 'existing'); assert.equal(vm.creating.value, false)
+    assert.equal(vm.ruleId.value, ''); assert.equal(vm.draft.value.name, 'New recording'); assert.equal(vm.dirty.value, true)
+    assert.equal(vm.detail.value.rules[0].id, 'old-rule'); assert.equal(vm.detail.value.rules[0].name, 'Existing rule')
+    assert.ok(events.includes('consumed')); assert.ok(calls.every(x => x.method === 'GET'))
+    const fresh = MockEditor.setup({ user: { id: 'owner' }, recording: source, targetServerId: '', request }, { expose() {}, emit() {} })
+    await fresh.initialize(); assert.equal(fresh.creating.value, true); assert.equal(fresh.detail.value, null); assert.ok(fresh.pendingRecording.value)
+    const missing = MockEditor.setup({ user: { id: 'owner' }, recording: source, targetServerId: 'deleted', request }, { expose() {}, emit() {} })
+    await missing.initialize(); assert.equal(missing.detail.value, null); assert.ok(missing.pendingRecording.value); assert.match(missing.error.value, /已不存在/)
+  } finally { globalThis.window = oldWindow }
 })
 
 test('nested Postman folders preserve auth inheritance and multipart fields', () => {
