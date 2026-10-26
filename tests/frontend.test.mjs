@@ -12,7 +12,7 @@ const typesUrl = dataUrl(compile(await readFile(new URL('../WebPostman.Web/src/t
 const utilsSource = compile(await readFile(new URL('../WebPostman.Web/src/workspace-utils.ts', import.meta.url), 'utf8')).replaceAll("from './types'", `from '${typesUrl}'`)
 const utilsUrl = dataUrl(utilsSource)
 const { parseImport, resolveAuth, folderPath, curlCommand, workspaceChanges } = await import(utilsUrl)
-const { newAuth, newRequest } = await import(typesUrl)
+const { newAuth, newRequest, uid } = await import(typesUrl)
 const vueUrl = new URL('../WebPostman.Web/node_modules/vue/index.mjs', import.meta.url).href
 const lifecycleAdapter = dataUrl(`export * from '${vueUrl}'; export const onMounted = () => {}; export const onBeforeUnmount = () => {};`)
 const descriptor = sfc.parse(await readFile(new URL('../WebPostman.Web/src/App.vue', import.meta.url), 'utf8')).descriptor
@@ -32,6 +32,22 @@ const MockEditor = (await import(dataUrl(mockScript))).default
 const createEditor = () => { const vm = App.setup({}, { expose() {} }); vm.currentUser.value = { id: 'test-user', email: 'test@example.test' }; return vm }
 const jsonResponse = (data, status = 200) => ({ ok: status < 400, status, json: async () => data })
 const result = name => ({ body: name, contentType: 'text/plain', status: 200 })
+
+test('HTTP browsers without randomUUID can generate UUIDs and initialize the workspace', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  const nativeCrypto = globalThis.crypto
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { getRandomValues: nativeCrypto.getRandomValues.bind(nativeCrypto) } })
+  try {
+    const ids = Array.from({ length: 100 }, () => uid())
+    assert.equal(new Set(ids).size, ids.length)
+    for (const id of ids) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    const vm = App.setup({}, { expose() {} })
+    assert.ok(vm.draft.value.id)
+    assert.ok(vm.draft.value.params[0].id)
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', descriptor)
+  }
+})
 
 test('recording uses the executed response, preserves bytes and removes unsafe replay headers', () => {
   const recorded = recordMock({ status: 201, body: 'café', recordedBodyBase64: 'Y2Fm6Q==', contentType: 'text/plain', headers: { 'Content-Type': 'text/plain; charset=iso-8859-1', Connection: 'X-Hop', 'X-Hop': 'removed', 'Set-Cookie': 'PRIVATE', 'Content-Encoding': 'gzip', 'Content-Length': '123', 'X-Kept': 'yes' }, trace: { originalUrl: 'https://example.test/real/path?token=PRIVATE', method: 'GET' }, history: { method: 'POST', request: { name: 'Executed request' } } })
